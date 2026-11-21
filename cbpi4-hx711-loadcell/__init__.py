@@ -11,7 +11,7 @@ from cbpi.api import *
 import time
 from cbpi.api.timer import Timer
 from HX711 import *
-from .convert import apply_deadband, grams_from_raw, rolling_median, to_display
+from .convert import follow_weight, grams_from_raw, to_display, trimmed_mean
 from cbpi.api.dataclasses import NotificationAction, NotificationType
 from cbpi.api.config import ConfigType
 
@@ -204,11 +204,11 @@ class HX711_Config(CBPiExtension):
 
 @parameters([Property.Number(label="offset",configurable = True, default_value = 0, description="Raw zero from calibration. Negative values are valid and are kept."),
     Property.Number(label="scale",configurable = True, default_value = 0, description="Raw counts per gram from calibration. Leave this value as calibrated. Do not divide it when showing kilograms."),
-    Property.Select(label="Unit", options=["kg","g"], description="Display unit. Calibration weight stays in grams."),
-    Property.Select(label="Samples", options=[10,20,30,40], description="Median of this many raw readings. 30 is calmer."),
-    Property.Select(label="Smooth", options=[1,3,5,9], description="Median of this many successive results. 5 hides short jumps."),
-    Property.Select(label="Deadband", options=[0,20,50,100,200], description="Ignore changes smaller than this many grams."),
-    Property.Select(label="Interval", options=[1,2,5,10,30,60], description="Pause between readings, in seconds")])
+    Property.Select(label="Unit", options=["kg","g"], description="Display unit. Calibration weight stays in grams. 85 kg is entered as 85000."),
+    Property.Select(label="TareOnStart", options=["Yes","No"], description="Set the empty scale to 0 at every start. Leave the scale empty while CraftBeerPi starts."),
+    Property.Select(label="Samples", options=[10,15,20,30], description="Readings averaged for one result. 15 takes about two seconds."),
+    Property.Select(label="Deadband", options=[0,100,200,500], description="Hide changes smaller than this many grams. A step of 3 kg or more is shown at once."),
+    Property.Select(label="Interval", options=[1,2,5,10,30,60], description="Pause between readings, in seconds. Use 1 for a quicker display.")])
 
 class CustomSensor(CBPiSensor):
 
@@ -219,16 +219,16 @@ class CustomSensor(CBPiSensor):
         #self.dout = int(self.props.get("dout",27))
         #self.pd_sck = int(self.props.get("pd_sck",23))
         #self.gain = int(self.props.get("gain",128))
-        self.Interval = int(self.props.get("Interval",2))
-        self.samples = max(1, int(self.props.get("Samples", 30)))
-        self.smooth = max(1, int(self.props.get("Smooth", 5)))
-        self.deadband = max(0, float(self.props.get("Deadband", 50) or 0))
+        self.Interval = int(self.props.get("Interval", 1))
+        self.samples = max(1, int(self.props.get("Samples", 15)))
+        self.deadband = max(0, float(self.props.get("Deadband", 200) or 0))
+        self.snap = 3000.0
+        self.tare_on_start = str(self.props.get("TareOnStart", "Yes")) != "No"
         self.unit = str(self.props.get("Unit", "kg") or "kg")
         self.offset = float(self.props.get("offset", 0) or 0)
         self.scale = float(self.props.get("scale", 0) or 0)
         self.calibration_active = False
         self.measurement_is_running = False
-        self._history = []
         self._shown_grams = None
 
 
@@ -246,21 +246,22 @@ class CustomSensor(CBPiSensor):
         global hx_active
 
     def _read_raw(self):
+        try:
+            values = [int(value) for value in hx.getValues(self.samples)]
+            if values:
+                return trimmed_mean(values)
+        except Exception as e:
+            logging.warning("HX711 sample burst failed, using median read: {}".format(e))
         return float(hx.read(Options(self.samples, ReadType.Median)))
 
     def _grams(self, raw):
         return grams_from_raw(raw, self.offset, self.scale)
 
     def _reset_filter(self):
-        self._history = []
         self._shown_grams = None
 
     def _publish_grams(self, grams):
-        self._history.append(grams)
-        if len(self._history) > self.smooth:
-            self._history = self._history[-self.smooth:]
-        stable = rolling_median(self._history)
-        self._shown_grams = apply_deadband(self._shown_grams, stable, self.deadband)
+        self._shown_grams = follow_weight(self._shown_grams, grams, self.deadband, self.snap)
         self.value = to_display(self._shown_grams, self.unit)
         return self.value
 
@@ -275,10 +276,10 @@ class CustomSensor(CBPiSensor):
 
     @action(key="Tare Sensor", parameters=[])
     async def Reset(self, **kwargs):
-        offset = self._tare()
+        self._tare()
         self.cbpi.notify(
             "HX711 Tare",
-            "Zero captured. To keep it after a restart, set offset to {}".format(round(offset, 1)),
+            "Nullpunkt gesetzt. Beim nächsten Start wird die leere Waage wieder auf 0 gestellt.",
             NotificationType.INFO,
         )
 
@@ -291,6 +292,13 @@ class CustomSensor(CBPiSensor):
         self.weight = float(weight)
         if self.weight <= 0:
             self.cbpi.notify("Loadcell Calibration Error", "Weight for calibration must be larger than 0", NotificationType.ERROR, action=[NotificationAction("Next", self.NextStep)])
+            return
+        if self.weight < 500:
+            self.cbpi.notify(
+                "Kalibrierung",
+                "Das Gewicht ist in Gramm. Für 85 kg bitte 85000 eintragen, nicht 85.",
+                NotificationType.ERROR,
+            )
             return
         logging.info(weight)
         self.calibration_active = True
@@ -318,7 +326,7 @@ class CustomSensor(CBPiSensor):
         else:
             self.cbpi.notify(
                 "Loadcell Calibration done",
-                "Enter these values in the sensor hardware. Offset: {}; Scale: {}".format(self.zeroValue, self.refUnit),
+                "Offset {} und Scale {} eintragen. Scale nicht umrechnen. 85 kg wurden als 85000 g kalibriert und werden als kg angezeigt.".format(self.zeroValue, self.refUnit),
                 action=[NotificationAction("Next Step", self.NextStep)],
             )
             while not self.next == True:
@@ -345,6 +353,14 @@ class CustomSensor(CBPiSensor):
                 retries -=1
                 logging.error("HX711 setup failed: {}".format(e))
                 await asyncio.sleep(1)
+
+        if self.tare_on_start:
+            try:
+                self.offset = self._read_raw()
+                self._reset_filter()
+                logging.info("HX711 startup tare, offset {}".format(self.offset))
+            except Exception as e:
+                logging.error("HX711 startup tare failed: {}".format(e))
 
         while self.running is True:
             try:

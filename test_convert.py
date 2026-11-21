@@ -12,6 +12,8 @@ grams_from_raw = _module.grams_from_raw
 rolling_median = _module.rolling_median
 apply_deadband = _module.apply_deadband
 to_display = _module.to_display
+follow_weight = _module.follow_weight
+trimmed_mean = _module.trimmed_mean
 
 
 class GramsFromRawTest(unittest.TestCase):
@@ -42,6 +44,16 @@ class GramsFromRawTest(unittest.TestCase):
         self.assertEqual(apply_deadband(5000, 5030, 50), 5000)
         self.assertEqual(apply_deadband(5000, 5080, 50), 5080)
         self.assertEqual(apply_deadband(None, 5080, 50), 5080)
+
+    def test_stepping_off_is_shown_immediately(self):
+        self.assertEqual(follow_weight(85000, 0, 200, 3000), 0)
+        self.assertEqual(follow_weight(0, 85000, 200, 3000), 85000)
+
+    def test_small_noise_does_not_replace_the_weight(self):
+        self.assertEqual(follow_weight(85000, 85100, 200, 3000), 85000)
+
+    def test_trimmed_mean_drops_spikes(self):
+        self.assertEqual(trimmed_mean([10, 10, 10, 10, 500]), 10)
 
 
 if __name__ == "__main__":
