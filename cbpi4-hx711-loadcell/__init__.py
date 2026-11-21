@@ -11,7 +11,7 @@ from cbpi.api import *
 import time
 from cbpi.api.timer import Timer
 from HX711 import *
-from .convert import grams_from_raw
+from .convert import apply_deadband, grams_from_raw, rolling_median, to_display
 from cbpi.api.dataclasses import NotificationAction, NotificationType
 from cbpi.api.config import ConfigType
 
@@ -203,8 +203,11 @@ class HX711_Config(CBPiExtension):
 
 
 @parameters([Property.Number(label="offset",configurable = True, default_value = 0, description="Raw zero from calibration. Negative values are valid and are kept."),
-    Property.Number(label="scale",configurable = True, default_value = 0, description="Raw counts per gram from calibration. Negative values are valid. Do not replace a small value with 1."),
-    Property.Select(label="Samples", options=[5,10,15,20,30], description="Median of this many readings. 15 is a good start when the value jumps."),
+    Property.Number(label="scale",configurable = True, default_value = 0, description="Raw counts per gram from calibration. Leave this value as calibrated. Do not divide it when showing kilograms."),
+    Property.Select(label="Unit", options=["kg","g"], description="Display unit. Calibration weight stays in grams."),
+    Property.Select(label="Samples", options=[10,20,30,40], description="Median of this many raw readings. 30 is calmer."),
+    Property.Select(label="Smooth", options=[1,3,5,9], description="Median of this many successive results. 5 hides short jumps."),
+    Property.Select(label="Deadband", options=[0,20,50,100,200], description="Ignore changes smaller than this many grams."),
     Property.Select(label="Interval", options=[1,2,5,10,30,60], description="Pause between readings, in seconds")])
 
 class CustomSensor(CBPiSensor):
@@ -217,11 +220,16 @@ class CustomSensor(CBPiSensor):
         #self.pd_sck = int(self.props.get("pd_sck",23))
         #self.gain = int(self.props.get("gain",128))
         self.Interval = int(self.props.get("Interval",2))
-        self.samples = max(1, int(self.props.get("Samples", 15)))
+        self.samples = max(1, int(self.props.get("Samples", 30)))
+        self.smooth = max(1, int(self.props.get("Smooth", 5)))
+        self.deadband = max(0, float(self.props.get("Deadband", 50) or 0))
+        self.unit = str(self.props.get("Unit", "kg") or "kg")
         self.offset = float(self.props.get("offset", 0) or 0)
         self.scale = float(self.props.get("scale", 0) or 0)
         self.calibration_active = False
         self.measurement_is_running = False
+        self._history = []
+        self._shown_grams = None
 
 
         logging.info("INIT HX711:")
@@ -231,6 +239,7 @@ class CustomSensor(CBPiSensor):
         logging.info("offset: {}".format(self.offset))
         logging.info("scale: {}".format(self.scale))
         logging.info("samples: {}".format(self.samples))
+        logging.info("unit: {}".format(self.unit))
 
         logging.info("Setup HX711")
         global hx
@@ -242,8 +251,25 @@ class CustomSensor(CBPiSensor):
     def _grams(self, raw):
         return grams_from_raw(raw, self.offset, self.scale)
 
+    def _reset_filter(self):
+        self._history = []
+        self._shown_grams = None
+
+    def _publish_grams(self, grams):
+        self._history.append(grams)
+        if len(self._history) > self.smooth:
+            self._history = self._history[-self.smooth:]
+        stable = rolling_median(self._history)
+        self._shown_grams = apply_deadband(self._shown_grams, stable, self.deadband)
+        self.value = to_display(self._shown_grams, self.unit)
+        return self.value
+
+    def get_unit(self):
+        return self.unit
+
     def _tare(self):
         self.offset = self._read_raw()
+        self._reset_filter()
         logging.info("Tare HX711 Loadcell, offset {}".format(self.offset))
         return self.offset
 
@@ -324,7 +350,7 @@ class CustomSensor(CBPiSensor):
             try:
                 if self.calibration_active == False:
                     self.measurement_is_running = True
-                    self.value = round(self._grams(self._read_raw()), 2)
+                    self._publish_grams(self._grams(self._read_raw()))
                     self.log_data(self.value)
                     self.push_update(self.value)
                     self.measurement_is_running = False
@@ -336,7 +362,7 @@ class CustomSensor(CBPiSensor):
                 await asyncio.sleep(self.Interval)
 
     def get_state(self):
-        return dict(value=self.value)
+        return dict(value=self.value, unit=self.unit)
 
 @parameters([Property.Number(label="Weight", description="Number of L to Tranfer", configurable=True),
              Property.Number(label="Density", description="Expected Wort Density - 1.XXX <-> 1.2", configurable=True),

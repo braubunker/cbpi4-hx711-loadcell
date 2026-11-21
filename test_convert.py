@@ -9,6 +9,9 @@ _spec = importlib.util.spec_from_file_location(
 _module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_module)
 grams_from_raw = _module.grams_from_raw
+rolling_median = _module.rolling_median
+apply_deadband = _module.apply_deadband
+to_display = _module.to_display
 
 
 class GramsFromRawTest(unittest.TestCase):
@@ -27,6 +30,18 @@ class GramsFromRawTest(unittest.TestCase):
     def test_zero_scale_is_rejected(self):
         with self.assertRaises(ValueError):
             grams_from_raw(100, 0, 0)
+
+    def test_display_converts_grams_to_kilograms(self):
+        self.assertEqual(to_display(5125, "kg"), 5.125)
+        self.assertEqual(to_display(5125, "g"), 5125.0)
+
+    def test_rolling_median_ignores_a_single_spike(self):
+        self.assertEqual(rolling_median([5000, 5002, 9800, 4998, 5001]), 5001)
+
+    def test_deadband_keeps_small_changes_hidden(self):
+        self.assertEqual(apply_deadband(5000, 5030, 50), 5000)
+        self.assertEqual(apply_deadband(5000, 5080, 50), 5080)
+        self.assertEqual(apply_deadband(None, 5080, 50), 5080)
 
 
 if __name__ == "__main__":
