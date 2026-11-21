@@ -1,54 +1,55 @@
-# Craftbeerpi4 Plugin for HX711 loadcell 
+# HX711 für CraftBeerPi 4
 
-Loadcell must be hooked up to a HX711 controller to readout the data 
+Fork von [PiBrewing/cbpi4-hx711-loadcell](https://github.com/PiBrewing/cbpi4-hx711-loadcell). Der Sensor heißt weiter **HX711 Load Cell**, vorhandene Sensoren bleiben erhalten.
 
-## Software installation:
+Gegenüber der Originalfassung:
 
-This plugin requires additional packages for the installation that MUST be installed / complied BEFORE you install the plugin!!!
+- Offset und Scale bleiben Kommazahlen, auch mit Minus. Ein kleiner Scale wird nicht mehr durch 1 ersetzt.
+- Beim Start wird nicht neu tariert. Der gespeicherte Offset bleibt der Nullpunkt.
+- Jede Anzeige ist der Median aus 15 Messungen. Unter **Samples** sind 5, 10, 15, 20 und 30 wählbar.
 
-Please install the required development packages:
+## Installation über das Netz
 
-`sudo apt-get install -y liblgpio-dev`
+Auf dem Raspberry Pi, einmalig falls `git` fehlt:
 
-Then, you need to clone the hx711 repository as it serves as basis for the python package:
+```bash
+sudo apt update
+sudo apt install -y git
+```
 
-`git clone --depth=1 https://github.com/endail/hx711`
+Plugin holen und das bisherige ersetzen:
 
-Now change to the package directory and compile the package:
+```bash
+pipx runpip cbpi4 install --force-reinstall "git+https://github.com/braubunker/cbpi4-hx711-loadcell.git"
+sudo systemctl restart craftbeerpi
+```
 
-`cd hx711`
+Dieselbe Zeile später noch einmal ausführen, wenn eine neuere Fassung in diesem Repo liegt.
 
-`make && sudo make install`
+## Sensor einstellen
 
-Then run `sudo ldconfig` to allow other packages to access the hx711 library.
+1. CraftBeerPi öffnen.
+2. **Hardware** → **Sensor** → den HX711-Sensor öffnen.
+3. **Samples** auf **15** stellen. Wenn die Anzeige danach noch springt, 20 oder 30 nehmen.
+4. **Offset** und **Scale** aus der Kalibrierung eintragen. Ein Minuszeichen stehen lassen.
+5. Speichern und CraftBeerPi neu starten:
 
-Afterwards, you can install the hx711 python package first or move directly to the installation of the hx711 loadcell plugin:
+```bash
+sudo systemctl restart craftbeerpi
+```
 
-`pipx runpip cbpi4 install hx711-rpi-py`
+Die drei Punkte für Tarieren und Kalibrieren stehen am Sensor-Widget auf dem Dashboard. Dafür in den Widget-Eigenschaften **Action** auf **Yes** setzen.
 
-For the installation of the plugin, please have a look at the [Craftbeerpi4 Documentation](https://openbrewing.gitbook.io/craftbeerpi4_support/readme/plugin-installation)
+## Kalibrieren
 
-- Package name: cbpi4-hx711-loadcell (not yet available)
-- Package link: https://github.com/PiBrewing/cbpi4-hx711-loadcell/archive/main.zip (not yet under main available)
+1. Kessel leeren.
+2. Am Widget **Calibrate Sensor** wählen.
+3. Das bekannte Gewicht in **Gramm** eintragen, zum Beispiel `5000` für 5 kg. Noch nichts auf die Waage stellen.
+4. Auf **Next Step** warten, das Gewicht aufstellen, dann **Next Step** bestätigen.
+5. In der Meldung stehen Offset und Scale. Beide in den Sensor übernehmen, speichern, CraftBeerPi neu starten.
 
-Development link: https://github.com/PiBrewing/cbpi4-hx711-loadcell/archive/development.zip
+Ist der Scale kleiner als 0,5, wird er nicht zur Übernahme angeboten. Dann heben sich die vier Wägezellen noch gegenseitig auf, und die Verdrahtung muss zuerst stimmen.
 
+## Tarieren
 
-## Hardware Installation:
-
-To be added 
-
-
-## Sensor Configuration
-
-From 0.0.4 to 0.1.0 some major changes had to be made. The sensor GPIO configuration must be done in the global settings and not on the sensor hardware page itself. Currently, only 1 sensor can be used.
-
-Calibration is done on the sensor hardware section.
-
-More information to be added.
-
-
-### Changelog:
-
-- 14.08.24: (0.1.0) Conversion to new hx711 library which is required for bookworm in combination with lgpio
-- XX.XX.XX: (0.0.4) Old Version
+**Tare Sensor** setzt den aktuellen Rohwert als Nullpunkt. Die Meldung nennt den Offset. Diesen Wert in den Sensor eintragen, sonst gilt nach einem Neustart wieder der alte Offset.

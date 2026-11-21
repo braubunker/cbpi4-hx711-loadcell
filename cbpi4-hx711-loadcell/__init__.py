@@ -11,6 +11,7 @@ from cbpi.api import *
 import time
 from cbpi.api.timer import Timer
 from HX711 import *
+from .convert import grams_from_raw
 from cbpi.api.dataclasses import NotificationAction, NotificationType
 from cbpi.api.config import ConfigType
 
@@ -201,9 +202,10 @@ class HX711_Config(CBPiExtension):
                 logger.warning(e)
 
 
-@parameters([Property.Number(label="offset",configurable = True, default_value = 0, description="Offset for the HX711 scale from calibration setup (Default is 0)"),
-    Property.Number(label="scale",configurable = True, default_value = 0, description="Scale ratio input for the HX711 scale from calibration setup (Default is 1)"),
-    Property.Select(label="Interval", options=[1,2,5,10,30,60], description="Interval in Seconds")])
+@parameters([Property.Number(label="offset",configurable = True, default_value = 0, description="Raw zero from calibration. Negative values are valid and are kept."),
+    Property.Number(label="scale",configurable = True, default_value = 0, description="Raw counts per gram from calibration. Negative values are valid. Do not replace a small value with 1."),
+    Property.Select(label="Samples", options=[5,10,15,20,30], description="Median of this many readings. 15 is a good start when the value jumps."),
+    Property.Select(label="Interval", options=[1,2,5,10,30,60], description="Pause between readings, in seconds")])
 
 class CustomSensor(CBPiSensor):
 
@@ -215,8 +217,9 @@ class CustomSensor(CBPiSensor):
         #self.pd_sck = int(self.props.get("pd_sck",23))
         #self.gain = int(self.props.get("gain",128))
         self.Interval = int(self.props.get("Interval",2))
-        self.offset = int(float(self.props.get("offset",0)))
-        self.scale = int(float(self.props.get("scale",1)))
+        self.samples = max(1, int(self.props.get("Samples", 15)))
+        self.offset = float(self.props.get("offset", 0) or 0)
+        self.scale = float(self.props.get("scale", 0) or 0)
         self.calibration_active = False
         self.measurement_is_running = False
 
@@ -227,19 +230,34 @@ class CustomSensor(CBPiSensor):
         #logging.info("gain: {}".format(self.gain))
         logging.info("offset: {}".format(self.offset))
         logging.info("scale: {}".format(self.scale))
+        logging.info("samples: {}".format(self.samples))
 
         logging.info("Setup HX711")
         global hx
         global hx_active
 
+    def _read_raw(self):
+        return float(hx.read(Options(self.samples, ReadType.Median)))
+
+    def _grams(self, raw):
+        return grams_from_raw(raw, self.offset, self.scale)
+
+    def _tare(self):
+        self.offset = self._read_raw()
+        logging.info("Tare HX711 Loadcell, offset {}".format(self.offset))
+        return self.offset
+
     @action(key="Tare Sensor", parameters=[])
     async def Reset(self, **kwargs):
-        hx.zero()
-        logging.info("Tare HX711 Loadcell")
+        offset = self._tare()
+        self.cbpi.notify(
+            "HX711 Tare",
+            "Zero captured. To keep it after a restart, set offset to {}".format(round(offset, 1)),
+            NotificationType.INFO,
+        )
 
     def tarereset(self):
-        hx.zero()
-        logging.info("Tare HX711 Loadcell")
+        self._tare()
 
     @action(key="Calibrate Sensor", parameters=[Property.Number(label="weight",configurable=True, default_value = 0, description="Please enter the known weight of your calibration item and remove all weight from your scale")])
     async def Calibrate(self ,weight = 0, **kwargs):
@@ -254,9 +272,8 @@ class CustomSensor(CBPiSensor):
             logging.info("Waiting for Sensor")
             await asyncio.sleep(self.Interval)
             pass
-        hx.zero()
         logging.info("Reset")
-        self.zeroValue=hx.read(Options(10))
+        self.zeroValue = round(self._read_raw(), 1)
         logging.info("Calibrate HX711 Loadcell")
         self.cbpi.notify("Loadcell Calibration", "Please put your known weight on the scale and press next", NotificationType.INFO, action=[NotificationAction("Next Step", self.NextStep)])
         while not self.next == True:
@@ -264,20 +281,24 @@ class CustomSensor(CBPiSensor):
             pass
         self.next = False
 
-        self.raw = hx.read(Options(10))
-        self.refUnitFloat = round(((self.raw-self.zeroValue) / self.weight),2)
-        self.refUnit = round(self.refUnitFloat, 0)
-        if self.refUnit == 0:
-            self.refUnit=1
-
-        #logging.info("Scale Factor {}".format(self.calibration_factor))
-        self.cbpi.notify("Loadcell Calibration done", "Enter these values in the sensor hardware. Offset: {}; Scale: {}".format(self.zeroValue, self.refUnit),action=[NotificationAction("Next Step", self.NextStep)])
-        while not self.next == True:
-            await asyncio.sleep(1)
-            pass
-        self.next = False
-        logging.info("Tare")
-        hx.zero()
+        self.raw = self._read_raw()
+        self.refUnit = round((self.raw - self.zeroValue) / self.weight, 4)
+        if abs(self.refUnit) < 0.5:
+            self.cbpi.notify(
+                "Loadcell Calibration Error",
+                "Scale is {} and too small. Check the wiring of the four cells before entering it. A value near 1 makes the reading jump.".format(self.refUnit),
+                NotificationType.ERROR,
+            )
+        else:
+            self.cbpi.notify(
+                "Loadcell Calibration done",
+                "Enter these values in the sensor hardware. Offset: {}; Scale: {}".format(self.zeroValue, self.refUnit),
+                action=[NotificationAction("Next Step", self.NextStep)],
+            )
+            while not self.next == True:
+                await asyncio.sleep(1)
+                pass
+            self.next = False
         self.calibration_active = False
 
     async def NextStep(self):
@@ -290,34 +311,29 @@ class CustomSensor(CBPiSensor):
         while ready is False and retries:
             try:
                 hx.setUnit(Mass.Unit.G)
-                hx.setReferenceUnit(self.scale)
-                hx.setOffset(self.offset)
-                logging.info("Tare")
-                hx.zero()
+                # Conversion is done in Python so a fractional or negative scale is preserved.
+                hx.setReferenceUnit(1)
+                hx.setOffset(0)
                 ready=True
-            except:
+            except Exception as e:
                 retries -=1
+                logging.error("HX711 setup failed: {}".format(e))
                 await asyncio.sleep(1)
-                pass
-
-
-
 
         while self.running is True:
             try:
                 if self.calibration_active == False:
                     self.measurement_is_running = True
-                    self.value = round(float(hx.weight(5)),2)
+                    self.value = round(self._grams(self._read_raw()), 2)
                     self.log_data(self.value)
                     self.push_update(self.value)
                     self.measurement_is_running = False
                     await asyncio.sleep(self.Interval)
                 else:
                     await asyncio.sleep(self.Interval)
-                    pass
-            except:
+            except Exception as e:
+                logging.error("HX711 read failed: {}".format(e))
                 await asyncio.sleep(self.Interval)
-                pass
 
     def get_state(self):
         return dict(value=self.value)
