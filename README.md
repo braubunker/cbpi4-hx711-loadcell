@@ -6,7 +6,7 @@ Gegenüber der Originalfassung:
 
 - Offset und Scale bleiben Kommazahlen, auch mit Minus. Ein kleiner Scale wird nicht mehr durch 1 ersetzt.
 - Beim Start wird nicht neu tariert. Der gespeicherte Offset bleibt der Nullpunkt.
-- Die Anzeige steht in Kilogramm. Die Kalibrierung bleibt in Gramm: 85 kg werden als `85000` eingetragen.
+- Die Anzeige und die Kalibrierung sind in Kilogramm. Für eine Person von 85 kg wird `85` eingetragen, nicht `85000`.
 - Beim Start wird die leere Waage auf 0 gestellt. Ein großer Schritt, etwa Auf- oder Absteigen, erscheint mit der nächsten Messung und bleibt nicht auf einem Zwischenwert stehen.
 
 ## Installation über das Netz
@@ -45,9 +45,9 @@ Die drei Punkte für Tarieren und Kalibrieren stehen am Sensor-Widget auf dem Da
 
 1. Kessel leeren.
 2. Am Widget **Calibrate Sensor** wählen.
-3. Das bekannte Gewicht in **Gramm** eintragen. Für 85 kg also `85000`, nicht `85`. Noch nichts auf die Waage stellen.
-4. Auf **Next Step** warten, das Gewicht aufstellen, dann **Next Step** bestätigen.
-5. In der Meldung stehen Offset und Scale. Beide unverändert in den Sensor übernehmen. Für die Kilogrammanzeige nichts umrechnen. Speichern und CraftBeerPi neu starten.
+3. Das bekannte Gewicht in **Kilogramm** eintragen. Für 85 kg also `85`. Noch nichts auf die Waage stellen.
+4. Auf die Meldung warten, das Gewicht aufstellen, still stehen und erst dann **Next Step** bestätigen.
+5. Die Meldung nennt eine Kontrolle in kg. Sie muss nahe am bekannten Gewicht liegen. Offset und Scale daraus eintragen, die Kommastellen von Scale behalten, speichern und mit leerer Waage neu starten.
 
 `12.500` bedeutet 12,5 kg. Nach dem Neustart muss die Waage leer sein, sonst wird das aktuelle Gewicht als neuer Nullpunkt genommen. Ältere Punkte in der Chart sind noch in Gramm und fallen deshalb aus der Skala, bis sie aus dem Zeitraum rutschen.
 

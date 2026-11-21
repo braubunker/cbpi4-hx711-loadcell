@@ -14,6 +14,8 @@ apply_deadband = _module.apply_deadband
 to_display = _module.to_display
 follow_weight = _module.follow_weight
 trimmed_mean = _module.trimmed_mean
+scale_from_kilograms = _module.scale_from_kilograms
+raw_is_usable = _module.raw_is_usable
 
 
 class GramsFromRawTest(unittest.TestCase):
@@ -54,6 +56,19 @@ class GramsFromRawTest(unittest.TestCase):
 
     def test_trimmed_mean_drops_spikes(self):
         self.assertEqual(trimmed_mean([10, 10, 10, 10, 500]), 10)
+
+    def test_calibration_in_kilograms_reads_back_the_same_weight(self):
+        empty = 200000
+        loaded = 370000
+        scale = scale_from_kilograms(empty, loaded, 85)
+        self.assertAlmostEqual(to_display(grams_from_raw(loaded, empty, scale), "kg"), 85)
+        # Without the empty offset the same raw value is about twice the weight.
+        self.assertGreater(to_display(grams_from_raw(loaded, 0, scale), "kg"), 150)
+
+    def test_zero_and_saturated_raw_are_rejected(self):
+        self.assertFalse(raw_is_usable(0))
+        self.assertFalse(raw_is_usable(8388607))
+        self.assertTrue(raw_is_usable(-150000))
 
 
 if __name__ == "__main__":

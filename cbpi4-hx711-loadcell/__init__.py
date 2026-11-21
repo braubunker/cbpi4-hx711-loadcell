@@ -11,7 +11,14 @@ from cbpi.api import *
 import time
 from cbpi.api.timer import Timer
 from HX711 import *
-from .convert import follow_weight, grams_from_raw, to_display, trimmed_mean
+from .convert import (
+    follow_weight,
+    grams_from_raw,
+    raw_is_usable,
+    scale_from_kilograms,
+    to_display,
+    trimmed_mean,
+)
 from cbpi.api.dataclasses import NotificationAction, NotificationType
 from cbpi.api.config import ConfigType
 
@@ -254,6 +261,18 @@ class CustomSensor(CBPiSensor):
             logging.warning("HX711 sample burst failed, using median read: {}".format(e))
         return float(hx.read(Options(self.samples, ReadType.Median)))
 
+    def _averaged_raw(self, bursts=3, samples=20):
+        previous = self.samples
+        self.samples = samples
+        try:
+            self._read_raw()
+            total = 0.0
+            for _ in range(bursts):
+                total += self._read_raw()
+            return total / float(bursts)
+        finally:
+            self.samples = previous
+
     def _grams(self, raw):
         return grams_from_raw(raw, self.offset, self.scale)
 
@@ -286,17 +305,14 @@ class CustomSensor(CBPiSensor):
     def tarereset(self):
         self._tare()
 
-    @action(key="Calibrate Sensor", parameters=[Property.Number(label="weight",configurable=True, default_value = 0, description="Please enter the known weight of your calibration item and remove all weight from your scale")])
+    @action(key="Calibrate Sensor", parameters=[Property.Number(label="weight",configurable=True, default_value = 0, description="Gewicht in Kilogramm. Für 85 kg also 85 eintragen. Waage dabei leer lassen.")])
     async def Calibrate(self ,weight = 0, **kwargs):
         self.next = False
         self.weight = float(weight)
-        if self.weight <= 0:
-            self.cbpi.notify("Loadcell Calibration Error", "Weight for calibration must be larger than 0", NotificationType.ERROR, action=[NotificationAction("Next", self.NextStep)])
-            return
-        if self.weight < 500:
+        if not 1 <= self.weight <= 400:
             self.cbpi.notify(
                 "Kalibrierung",
-                "Das Gewicht ist in Gramm. Für 85 kg bitte 85000 eintragen, nicht 85.",
+                "Gewicht in Kilogramm eintragen. Für 85 kg also 85, nicht 85000.",
                 NotificationType.ERROR,
             )
             return
@@ -307,32 +323,50 @@ class CustomSensor(CBPiSensor):
             await asyncio.sleep(self.Interval)
             pass
         logging.info("Reset")
-        self.zeroValue = round(self._read_raw(), 1)
+        self.zeroValue = round(self._averaged_raw(), 1)
+        if not raw_is_usable(self.zeroValue):
+            self.calibration_active = False
+            self.cbpi.notify("Kalibrierung", "Leermessung ungültig. Waage leer lassen und neu starten.", NotificationType.ERROR)
+            return
         logging.info("Calibrate HX711 Loadcell")
-        self.cbpi.notify("Loadcell Calibration", "Please put your known weight on the scale and press next", NotificationType.INFO, action=[NotificationAction("Next Step", self.NextStep)])
+        self.cbpi.notify("Loadcell Calibration", "Gewicht aufstellen, still stehen und dann Next Step drücken.", NotificationType.INFO, action=[NotificationAction("Next Step", self.NextStep)])
         while not self.next == True:
             await asyncio.sleep(1)
             pass
         self.next = False
 
-        self.raw = self._read_raw()
-        self.refUnit = round((self.raw - self.zeroValue) / self.weight, 4)
+        self.raw = self._averaged_raw()
+        self.refUnit = round(scale_from_kilograms(self.zeroValue, self.raw, self.weight), 4)
         if abs(self.refUnit) < 0.5:
             self.cbpi.notify(
                 "Loadcell Calibration Error",
-                "Scale is {} and too small. Check the wiring of the four cells before entering it. A value near 1 makes the reading jump.".format(self.refUnit),
+                "Scale ist {} und damit zu klein. Die vier Zellen arbeiten noch gegeneinander.".format(self.refUnit),
                 NotificationType.ERROR,
             )
         else:
-            self.cbpi.notify(
-                "Loadcell Calibration done",
-                "Offset {} und Scale {} eintragen. Scale nicht umrechnen. 85 kg wurden als 85000 g kalibriert und werden als kg angezeigt.".format(self.zeroValue, self.refUnit),
-                action=[NotificationAction("Next Step", self.NextStep)],
-            )
-            while not self.next == True:
-                await asyncio.sleep(1)
-                pass
-            self.next = False
+            self.offset = self.zeroValue
+            self.scale = self.refUnit
+            self._reset_filter()
+            check_raw = self._averaged_raw()
+            check_grams = grams_from_raw(check_raw, self.offset, self.scale)
+            check_kg = to_display(check_grams, "kg")
+            self._publish_grams(check_grams)
+            if abs(check_kg - self.weight) > max(2.0, self.weight * 0.15):
+                self.cbpi.notify(
+                    "Kalibrierung passt nicht",
+                    "Kontrolle zeigt {} kg, erwartet {} kg. Waage leer starten, dann still draufstehen und wiederholen.".format(check_kg, self.weight),
+                    NotificationType.ERROR,
+                )
+            else:
+                self.cbpi.notify(
+                    "Kalibrierung fertig",
+                    "Kontrolle {} kg. Offset {} und Scale {} eintragen, Kommastellen behalten. Danach speichern und mit leerer Waage neu starten.".format(check_kg, self.zeroValue, self.refUnit),
+                    action=[NotificationAction("Next Step", self.NextStep)],
+                )
+                while not self.next == True:
+                    await asyncio.sleep(1)
+                    pass
+                self.next = False
         self.calibration_active = False
 
     async def NextStep(self):
@@ -356,9 +390,13 @@ class CustomSensor(CBPiSensor):
 
         if self.tare_on_start:
             try:
-                self.offset = self._read_raw()
-                self._reset_filter()
-                logging.info("HX711 startup tare, offset {}".format(self.offset))
+                tare_raw = self._averaged_raw(bursts=2, samples=max(self.samples, 15))
+                if raw_is_usable(tare_raw):
+                    self.offset = tare_raw
+                    self._reset_filter()
+                    logging.info("HX711 startup tare, offset {}".format(self.offset))
+                else:
+                    logging.error("HX711 startup tare ignored invalid raw {}".format(tare_raw))
             except Exception as e:
                 logging.error("HX711 startup tare failed: {}".format(e))
 

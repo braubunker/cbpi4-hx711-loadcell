@@ -60,6 +60,20 @@ def follow_weight(previous, candidate, deadband, snap):
     return previous + 0.25 * (candidate - previous)
 
 
+def scale_from_kilograms(empty_raw, loaded_raw, kilograms):
+    """Raw counts per gram from an empty reading and a known kilogram load."""
+    kilograms = float(kilograms)
+    if kilograms <= 0:
+        raise ValueError("weight must be positive")
+    return (float(loaded_raw) - float(empty_raw)) / (kilograms * 1000.0)
+
+
+def raw_is_usable(raw):
+    """Reject a stuck zero and a saturated 24-bit HX711 word."""
+    raw = float(raw)
+    return raw != 0.0 and abs(raw) < 8000000.0
+
+
 def to_display(grams, unit):
     """Show kilograms by default. Calibration itself stays in grams."""
     grams = float(grams)
