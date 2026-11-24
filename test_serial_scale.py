@@ -20,6 +20,10 @@ class SerialScaleTest(unittest.TestCase):
         self.assertEqual(parse_raw_line("hx711-nano"), None)
         self.assertEqual(parse_raw_line(""), None)
 
+    def test_busy_port_is_explained(self):
+        message = _module._port_error(OSError("device reports readiness to read but returned no data (device disconnected or multiple access on port?)"), "/dev/ttyUSB0")
+        self.assertIn("USB-Verbindung", message)
+
     def test_explicit_port_is_kept(self):
         self.assertEqual(find_serial_port("/dev/ttyUSB0"), "/dev/ttyUSB0")
 

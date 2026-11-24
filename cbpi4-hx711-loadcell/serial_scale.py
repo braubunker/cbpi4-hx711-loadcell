@@ -30,6 +30,16 @@ def parse_raw_line(line):
         return None
 
 
+def _port_error(error, port):
+    text = str(error)
+    lowered = text.lower()
+    if "busy" in lowered or "resource busy" in lowered or "errno 16" in lowered:
+        return "Port {} ist belegt. Ein offenes cat oder den seriellen Monitor schliessen.".format(port or "USB")
+    if "no data" in lowered or "multiple access" in lowered:
+        return "USB-Verbindung zum Nano ist abgerissen. Kabel neu einstecken und CraftBeerPi neu starten."
+    return text
+
+
 def find_serial_port(preferred):
     """Use the configured port, or the first Arduino that appears on USB."""
     choice = str(preferred or "auto").strip()
@@ -60,6 +70,7 @@ class SerialScale(object):
         self.ser = None
         self.thread = None
         self.last_error = None
+        self._glitches = 0
 
     def start(self):
         if self.thread is not None:
@@ -128,11 +139,20 @@ class SerialScale(object):
                 raw_line = self.ser.readline()
                 if isinstance(raw_line, bytes):
                     raw_line = raw_line.decode("ascii", errors="ignore")
-                self.ingest(raw_line)
+                if self.ingest(raw_line) is not None:
+                    self._glitches = 0
+                    self.last_error = None
             except Exception as error:
-                self.last_error = str(error)
-                self._close_port()
-                time.sleep(2)
+                self._glitches += 1
+                self.last_error = _port_error(error, self.port)
+                # A single empty read is normal while the Nano settles.
+                # Reopening on every glitch resets the board and repeats it.
+                if self._glitches >= 5:
+                    self._close_port()
+                    self._glitches = 0
+                    time.sleep(1)
+                else:
+                    time.sleep(0.1)
 
     def _open(self):
         port = find_serial_port(self.port_setting)
@@ -142,12 +162,19 @@ class SerialScale(object):
             return
         import serial
 
-        port_handle = serial.Serial(port, self.baud, timeout=1)
-        # Opening the port resets the Nano. Wait out the bootloader.
+        port_handle = serial.Serial()
+        port_handle.port = port
+        port_handle.baudrate = self.baud
+        port_handle.timeout = 1
+        port_handle.exclusive = True
+        port_handle.rtscts = False
+        port_handle.dsrdtr = False
         port_handle.dtr = False
-        time.sleep(0.05)
-        port_handle.dtr = True
-        time.sleep(2.0)
+        port_handle.rts = False
+        port_handle.open()
+        port_handle.dtr = False
+        port_handle.rts = False
+        time.sleep(0.2)
         port_handle.reset_input_buffer()
         self.ser = port_handle
 
