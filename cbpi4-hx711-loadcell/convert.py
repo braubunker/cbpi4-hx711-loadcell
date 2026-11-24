@@ -61,11 +61,27 @@ def follow_weight(previous, candidate, deadband, snap):
 
 
 def scale_from_kilograms(empty_raw, loaded_raw, kilograms):
-    """Raw counts per gram from an empty reading and a known kilogram load."""
+    """Raw counts per gram from an empty reading and a known kilogram load.
+
+    A platform that barely moves can be well under one count per gram.
+    That factor is still valid and must not be rounded away.
+    """
     kilograms = float(kilograms)
     if kilograms <= 0:
         raise ValueError("weight must be positive")
     return (float(loaded_raw) - float(empty_raw)) / (kilograms * 1000.0)
+
+
+def format_scale(scale):
+    """Keep a small counts-per-gram factor readable and exact enough.
+
+    Rounding to four decimals turns 0.003529 into 0.0035. Eight decimals
+    still read the calibration weight back as the same kilograms.
+    """
+    text = "{:.8f}".format(float(scale)).rstrip("0").rstrip(".")
+    if text in ("", "-", "-0"):
+        return "0"
+    return text
 
 
 def raw_is_usable(raw):

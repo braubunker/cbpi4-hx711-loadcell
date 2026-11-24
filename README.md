@@ -64,16 +64,18 @@ pipx runpip cbpi4 install --force-reinstall "git+https://github.com/braubunker/c
 sudo systemctl restart craftbeerpi
 ```
 
-`dialout` gilt erst nach einem neuen Login. Läuft CraftBeerPi als root, ist die Gruppe egal. Die Waage beim Neustart leer lassen.
+`dialout` gilt erst nach einem neuen Login. Läuft CraftBeerPi als root, ist die Gruppe egal.
 
 Unter **Settings** steht **HX711_port**. `auto` sucht `/dev/ttyUSB0` und `/dev/ttyACM0`. Erscheint der Nano nicht, den Port eintragen, den `ls /dev/ttyUSB* /dev/ttyACM*` zeigt.
 
 ## Kalibrieren
 
-1. Sensor öffnen. **Unit** auf **kg**, **TareOnStart** auf **Yes**, **Samples** auf **15**, **Deadband** auf **200**, **Interval** auf **1**.
+1. Sensor öffnen. **Unit** auf **kg**, **TareOnStart** auf **No**, **Samples** auf **15**, **Deadband** auf **200**, **Interval** auf **1**. Einmal speichern, bevor jemand auf der Waage steht.
 2. Am Dashboard-Widget **Action** auf **Yes** stellen, damit die drei Punkte erscheinen.
 3. Waage leer lassen. Im Menü **1 Leer messen** wählen und für 85 kg `85` eintragen.
 4. Nach der Meldung das Gewicht aufstellen, still stehen und **2 Gewicht messen** wählen.
-5. Offset und Scale aus der Meldung eintragen, die Kommastellen behalten, speichern und mit leerer Waage neu starten.
+5. Die Anzeige muss jetzt etwa 85 kg zeigen. Offset und Scale werden gespeichert. Den Sensor nicht noch einmal speichern und CraftBeerPi nicht neu starten, solange das Gewicht noch drauf steht.
 
-`12.500` bedeutet 12,5 kg.
+`12.500` bedeutet 12,5 kg. Ein Scale von `0.0035` ist gültig und darf nicht auf `0` oder `1` gerundet werden.
+
+**TareOnStart** auf **Yes** stellt bei jedem Start den aktuellen Rohwert als Nullpunkt ein. Steht dabei das Kalibriergewicht noch drauf, zeigt die Waage danach etwa 0 kg statt 85 kg.

@@ -16,6 +16,7 @@ follow_weight = _module.follow_weight
 trimmed_mean = _module.trimmed_mean
 scale_from_kilograms = _module.scale_from_kilograms
 raw_is_usable = _module.raw_is_usable
+format_scale = _module.format_scale
 
 
 class GramsFromRawTest(unittest.TestCase):
@@ -64,6 +65,16 @@ class GramsFromRawTest(unittest.TestCase):
         self.assertAlmostEqual(to_display(grams_from_raw(loaded, empty, scale), "kg"), 85)
         # Without the empty offset the same raw value is about twice the weight.
         self.assertGreater(to_display(grams_from_raw(loaded, 0, scale), "kg"), 150)
+
+    def test_a_small_bridge_still_reads_back_85_kg(self):
+        # 300 counts for 85 kg is 0.0035 counts per gram. Treating those
+        # counts as grams shows 0.3 kg, which is the wrong display.
+        empty = -263850
+        loaded = empty + 300
+        scale = scale_from_kilograms(empty, loaded, 85)
+        stored = float(format_scale(scale))
+        self.assertAlmostEqual(stored, 300 / 85000.0, places=8)
+        self.assertAlmostEqual(to_display(grams_from_raw(loaded, empty, stored), "kg"), 85, places=2)
 
     def test_zero_and_saturated_raw_are_rejected(self):
         self.assertFalse(raw_is_usable(0))

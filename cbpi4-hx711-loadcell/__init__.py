@@ -6,6 +6,7 @@ import time
 from cbpi.api.timer import Timer
 from .convert import (
     follow_weight,
+    format_scale,
     grams_from_raw,
     raw_is_usable,
     scale_from_kilograms,
@@ -58,9 +59,9 @@ class HX711_Config(CBPiExtension):
 
 
 @parameters([Property.Number(label="offset",configurable = True, default_value = 0, description="Raw zero from calibration. Negative values are valid and are kept."),
-    Property.Number(label="scale",configurable = True, default_value = 0, description="Raw counts per gram from calibration. Leave this value as calibrated. Do not divide it when showing kilograms."),
+    Property.Number(label="scale",configurable = True, default_value = 0, description="Raw counts per gram. Small values such as 0.0035 are valid. Do not round them and do not divide them for kilograms."),
     Property.Select(label="Unit", options=["kg","g"], description="Display unit. Calibration weight is entered in kilograms."),
-    Property.Select(label="TareOnStart", options=["Yes","No"], description="Set the empty scale to 0 at every start. Leave the scale empty while CraftBeerPi starts."),
+    Property.Select(label="TareOnStart", options=["Yes","No"], description="No keeps the calibrated zero. Yes replaces it at every start, so the scale must be empty. Calibration sets this to No."),
     Property.Select(label="Samples", options=[10,15,20,30], description="Readings averaged for one result. 15 takes about two seconds."),
     Property.Select(label="Deadband", options=[0,100,200,500], description="Hide changes smaller than this many grams. A step of 3 kg or more is shown at once."),
     Property.Select(label="Interval", options=[1,2,5,10,30,60], description="Pause between readings, in seconds. Use 1 for a quicker display.")])
@@ -78,7 +79,7 @@ class CustomSensor(CBPiSensor):
         self.samples = max(1, int(self.props.get("Samples", 15)))
         self.deadband = max(0, float(self.props.get("Deadband", 200) or 0))
         self.snap = 3000.0
-        self.tare_on_start = str(self.props.get("TareOnStart", "Yes")) != "No"
+        self.tare_on_start = str(self.props.get("TareOnStart", "No")) == "Yes"
         self.unit = str(self.props.get("Unit", "kg") or "kg")
         self.offset = float(self.props.get("offset", 0) or 0)
         self.scale = float(self.props.get("scale", 0) or 0)
@@ -144,7 +145,7 @@ class CustomSensor(CBPiSensor):
         self._tare()
         self.cbpi.notify(
             "HX711 Tare",
-            "Nullpunkt gesetzt. Beim nächsten Start wird die leere Waage wieder auf 0 gestellt.",
+            "Nullpunkt ist jetzt das aktuelle Gewicht und gilt bis zur naechsten Kalibrierung.",
             NotificationType.INFO,
         )
 
@@ -185,26 +186,63 @@ class CustomSensor(CBPiSensor):
         except Exception as error:
             self._tell("Kalibrierung", "Messung mit Gewicht fehlgeschlagen: {}".format(error), NotificationType.ERROR)
             return
-        scale = round(scale_from_kilograms(self.zeroValue, loaded, self.cal_kg), 4)
-        if abs(scale) < 0.5:
-            self._tell("Kalibrierung", "Scale ist {} und damit zu klein. Die vier Zellen arbeiten noch gegeneinander.".format(scale), NotificationType.ERROR)
+        delta = float(loaded) - float(self.zeroValue)
+        if abs(delta) < 10:
+            self._tell(
+                "Kalibrierung",
+                "Die Waage hat sich nur um {} Zaehler bewegt. Das Gewicht steht nicht drauf, oder die vier Zellen arbeiten gegeneinander.".format(round(delta, 1)),
+                NotificationType.ERROR,
+            )
+            return
+        scale = scale_from_kilograms(self.zeroValue, loaded, self.cal_kg)
+        if scale == 0.0:
+            self._tell("Kalibrierung", "Scale ist 0. Die Messung war leer und mit Gewicht gleich.", NotificationType.ERROR)
             return
         self.offset = self.zeroValue
         self.scale = scale
         self._reset_filter()
         try:
             check_raw = await self._measure(bursts=1, samples=10)
-            check_kg = to_display(grams_from_raw(check_raw, self.offset, self.scale), "kg")
-            self._publish_grams(grams_from_raw(check_raw, self.offset, self.scale))
+            check_grams = grams_from_raw(check_raw, self.offset, self.scale)
+            check_kg = to_display(check_grams, "kg")
+            self._publish_grams(check_grams)
             self.push_update(self.value)
         except Exception as error:
             check_kg = "unbekannt"
             logging.error("HX711 check read failed: {}".format(error))
+        stored = await self._store_calibration()
+        scale_text = format_scale(scale)
+        if stored:
+            saved = "Offset {} und Scale {} sind gespeichert. TareOnStart steht auf No.".format(round(self.offset, 1), scale_text)
+        else:
+            saved = "Speichern fehlgeschlagen. Offset {} und Scale {} von Hand eintragen und TareOnStart auf No stellen.".format(round(self.offset, 1), scale_text)
+        hint = ""
+        if abs(delta) < 2000:
+            hint = " Die Aenderung ist nur {} Zaehler. Die Anzeige kann stark schwanken, weil die Zellen kaum arbeiten.".format(round(delta, 1))
         self._tell(
             "Kalibrierung fertig",
-            "Kontrolle {} kg. Offset {} und Scale {} eintragen. Kommastellen behalten, speichern und mit leerer Waage neu starten.".format(check_kg, round(self.zeroValue, 1), scale),
+            "Kontrolle {} kg. {} Sensor nicht speichern und CraftBeerPi nicht neu starten, solange das Gewicht noch drauf steht.{}".format(check_kg, saved, hint),
             NotificationType.SUCCESS,
         )
+
+    async def _store_calibration(self):
+        """Write the calibrated zero into the sensor without restarting it.
+
+        Saving the sensor form stops and starts the sensor. With TareOnStart
+        that start replaces the empty offset with the weight still standing
+        on the scale, so 85 kg then reads as about 0 kg.
+        """
+        self.props["offset"] = round(float(self.offset), 1)
+        self.props["scale"] = format_scale(self.scale)
+        self.props["TareOnStart"] = "No"
+        self.tare_on_start = False
+        try:
+            await self.cbpi.sensor.save()
+            logging.info("HX711 calibration stored offset {} scale {}".format(self.props["offset"], self.props["scale"]))
+            return True
+        except Exception as error:
+            logging.error("HX711 could not store calibration: {}".format(error))
+            return False
 
     async def run(self):
         ready= False
