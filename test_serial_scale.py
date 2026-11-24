@@ -11,6 +11,7 @@ _spec = importlib.util.spec_from_file_location(
 _module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_module)
 parse_raw_line = _module.parse_raw_line
+complete_lines = _module.complete_lines
 find_serial_port = _module.find_serial_port
 SerialScale = _module.SerialScale
 
@@ -18,9 +19,20 @@ SerialScale = _module.SerialScale
 class SerialScaleTest(unittest.TestCase):
     def test_parse_arduino_lines(self):
         self.assertEqual(parse_raw_line("R-12345"), -12345)
+        self.assertEqual(parse_raw_line("R-185542"), -185542)
         self.assertEqual(parse_raw_line("R 500"), 500)
         self.assertEqual(parse_raw_line("hx711-nano"), None)
         self.assertEqual(parse_raw_line(""), None)
+        self.assertEqual(parse_raw_line("20"), None)
+        self.assertEqual(parse_raw_line("542"), None)
+
+    def test_split_usb_chunks_stay_one_reading(self):
+        lines, pending = complete_lines("", "R-185")
+        self.assertEqual(lines, [])
+        lines, pending = complete_lines(pending, "542\nR-185512\nR-18")
+        self.assertEqual(lines, ["R-185542", "R-185512"])
+        self.assertEqual(pending, "R-18")
+        self.assertEqual(parse_raw_line(lines[0]), -185542)
 
     def test_busy_port_is_explained(self):
         message = _module._port_error(OSError("device reports readiness to read but returned no data (device disconnected or multiple access on port?)"), "/dev/ttyUSB0")

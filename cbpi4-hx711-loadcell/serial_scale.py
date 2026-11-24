@@ -21,16 +21,42 @@ except ImportError:  # loaded as a plain file in the unit test
 
 
 def parse_raw_line(line):
-    """Read one Arduino line. ``R-12345`` and bare integers are raw counts."""
+    """Read one complete Arduino line ``R-12345``.
+
+    A bare integer is rejected. A timeout used to cut ``R-185542`` into
+    pieces, and a piece such as ``542`` was then stored as a raw value.
+    """
     text = str(line).strip()
-    if not text:
+    if len(text) < 2 or text[0] not in "Rr":
         return None
-    if text[0] in "Rr":
-        text = text[1:].strip()
-    try:
-        return int(text, 10)
-    except ValueError:
+    number = text[1:].strip()
+    if not number:
         return None
+    digits = number[1:] if number[0] == "-" else number
+    if not digits.isdigit():
+        return None
+    return int(number, 10)
+
+
+def complete_lines(pending, chunk):
+    """Return only newline-terminated lines and keep the unfinished tail.
+
+    USB delivers the sketch output in short pieces. Parsing a piece before
+    the newline turns one HX711 count into several small false counts.
+    """
+    if isinstance(chunk, bytes):
+        chunk = chunk.decode("ascii", errors="ignore")
+    data = "{}{}".format(pending or "", chunk or "")
+    parts = data.split("\n")
+    pending = parts.pop()
+    if len(pending) > 80:
+        pending = ""
+    lines = []
+    for part in parts:
+        part = part.strip("\r")
+        if part:
+            lines.append(part)
+    return lines, pending
 
 
 def _port_error(error, port):
@@ -73,6 +99,9 @@ class SerialScale(object):
         self.ser = None
         self.thread = None
         self.last_error = None
+        self.last_text = None
+        self._pending = ""
+        self._warmup = 0
         self._glitches = 0
 
     def start(self):
@@ -85,6 +114,7 @@ class SerialScale(object):
         value = parse_raw_line(line)
         if value is None:
             return None
+        self.last_text = str(line).strip()
         stamp = time.time() if now is None else now
         with self.lock:
             self._seq += 1
@@ -174,12 +204,17 @@ class SerialScale(object):
             try:
                 if self.ser is None:
                     self._open()
-                raw_line = self.ser.readline()
-                if isinstance(raw_line, bytes):
-                    raw_line = raw_line.decode("ascii", errors="ignore")
-                if self.ingest(raw_line) is not None:
-                    self._glitches = 0
-                    self.last_error = None
+                chunk = self.ser.read(256)
+                lines, self._pending = complete_lines(self._pending, chunk)
+                if not lines:
+                    continue
+                for raw_line in lines:
+                    if self._warmup:
+                        self._warmup -= 1
+                        continue
+                    if self.ingest(raw_line) is not None:
+                        self._glitches = 0
+                        self.last_error = None
             except Exception as error:
                 self._glitches += 1
                 self.last_error = _port_error(error, self.port)
@@ -207,18 +242,26 @@ class SerialScale(object):
         port_handle.exclusive = True
         port_handle.rtscts = False
         port_handle.dsrdtr = False
+        # A falling DTR edge resets the Nano once. Leaving DTR low holds
+        # several CH340 clones in reset, so the sketch never runs and the
+        # parser stores boot noise such as 20 or 214 instead of R-185542.
         port_handle.dtr = False
         port_handle.rts = False
         port_handle.open()
-        port_handle.dtr = False
-        port_handle.rts = False
-        time.sleep(0.2)
+        time.sleep(0.1)
+        port_handle.dtr = True
+        port_handle.rts = True
+        port_handle.timeout = 1
+        time.sleep(2.0)
+        self._pending = ""
+        self._warmup = 15
         port_handle.reset_input_buffer()
         self.ser = port_handle
 
     def _close_port(self):
         handle = self.ser
         self.ser = None
+        self._pending = ""
         if handle is not None:
             try:
                 handle.close()

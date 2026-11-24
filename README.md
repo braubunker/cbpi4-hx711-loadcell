@@ -64,7 +64,7 @@ pipx runpip cbpi4 install --force-reinstall "git+https://github.com/braubunker/c
 sudo systemctl restart craftbeerpi
 ```
 
-`dialout` gilt erst nach einem neuen Login. Läuft CraftBeerPi als root, ist die Gruppe egal.
+`dialout` gilt erst nach einem neuen Login. Läuft CraftBeerPi als root, ist die Gruppe egal. Der Nano läuft dabei normal weiter. Die Rohwerte in CraftBeerPi müssen dieselben sein wie die Zeilen aus `cat`, zum Beispiel `R-185450`.
 
 Unter **Settings** steht **HX711_port**. `auto` sucht `/dev/ttyUSB0` und `/dev/ttyACM0`. Erscheint der Nano nicht, den Port eintragen, den `ls /dev/ttyUSB* /dev/ttyACM*` zeigt.
 

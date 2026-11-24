@@ -208,7 +208,7 @@ class CustomSensor(CBPiSensor):
         if not calibration_matches(self.cal_kg, check_kg):
             self._tell(
                 "Kalibrierung",
-                "Verworfen. Kontrolle {} kg statt {} kg. Rohwerte leer {}, belastet {}, Kontrolle {}. Nichts gespeichert. Still stehen und 2 Gewicht messen wiederholen. Springen die Rohwerte um hunderttausende, den RATE-Pin am HX711 auf GND legen.".format(
+                "Verworfen. Kontrolle {} kg statt {} kg. Rohwerte leer {}, belastet {}, Kontrolle {}. Nichts gespeichert. Der Leerwert muss ungefaehr der Zahl aus cat sein, zum Beispiel -185450.".format(
                     check_kg,
                     round(self.cal_kg, 1),
                     round(self.zeroValue, 1),
