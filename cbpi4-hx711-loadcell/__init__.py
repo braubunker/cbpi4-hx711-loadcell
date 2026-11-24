@@ -5,6 +5,8 @@ from cbpi.api import *
 import time
 from cbpi.api.timer import Timer
 from .convert import (
+    STABLE_SPREAD,
+    calibration_matches,
     follow_weight,
     format_scale,
     grams_from_raw,
@@ -101,19 +103,15 @@ class CustomSensor(CBPiSensor):
         global hx
         global hx_active
 
-    def _read_raw(self):
+    def _read_stats(self):
         if hx is None:
             raise RuntimeError("Arduino ist nicht verbunden")
-        return float(hx.read_latest(self.samples))
+        return hx.read_latest_stats(self.samples)
 
-    def _averaged_raw(self, bursts=3, samples=20):
+    def _stable_raw(self, samples=20):
         if hx is None:
             raise RuntimeError("Arduino ist nicht verbunden")
-        hx.read_fresh(samples)
-        total = 0.0
-        for _ in range(bursts):
-            total += hx.read_fresh(samples)
-        return total / float(bursts)
+        return hx.read_stable(samples)
 
     def _grams(self, raw):
         if not self.scale:
@@ -135,7 +133,8 @@ class CustomSensor(CBPiSensor):
         return self.unit
 
     def _tare(self):
-        self.offset = self._read_raw()
+        raw, _spread = self._stable_raw(max(self.samples, 15))
+        self.offset = raw
         self._reset_filter()
         logging.info("Tare HX711 Loadcell, offset {}".format(self.offset))
         return self.offset
@@ -152,10 +151,10 @@ class CustomSensor(CBPiSensor):
     def tarereset(self):
         self._tare()
 
-    async def _measure(self, bursts=2, samples=10):
+    async def _measure(self):
         self.calibration_active = True
         try:
-            return await asyncio.to_thread(self._averaged_raw, bursts, samples)
+            return await asyncio.to_thread(self._stable_raw, 20)
         finally:
             self.calibration_active = False
 
@@ -166,15 +165,16 @@ class CustomSensor(CBPiSensor):
             self._tell("Kalibrierung", "Gewicht in Kilogramm eintragen. Fuer 85 kg also 85, nicht 85000.", NotificationType.ERROR)
             return
         try:
-            raw = await self._measure()
+            raw, spread = await self._measure()
         except Exception as error:
-            self._tell("Kalibrierung", "Leermessung fehlgeschlagen: {}".format(error), NotificationType.ERROR)
+            self._tell("Kalibrierung", "Leermessung fehlgeschlagen: {}. Waage leer und ruhig lassen.".format(error), NotificationType.ERROR)
             return
         if not raw_is_usable(raw):
             self._tell("Kalibrierung", "Leermessung ungueltig. Waage leer lassen und noch einmal versuchen.", NotificationType.ERROR)
             return
         self.zeroValue = raw
-        self._tell("Kalibrierung", "Leerwert gespeichert. Jetzt {} kg aufstellen, still stehen und im Menue 2 Gewicht messen waehlen.".format(self.cal_kg))
+        self.zeroSpread = spread
+        self._tell("Kalibrierung", "Leerwert {} gespeichert. Jetzt {} kg aufstellen, still stehen und im Menue 2 Gewicht messen waehlen.".format(round(raw, 1), self.cal_kg))
 
     @action(key="2 Gewicht messen", parameters=[])
     async def CalibrateLoad(self, **kwargs):
@@ -182,34 +182,52 @@ class CustomSensor(CBPiSensor):
             self._tell("Kalibrierung", "Zuerst 1 Leer messen ausfuehren.", NotificationType.ERROR)
             return
         try:
-            loaded = await self._measure()
+            loaded, loaded_spread = await self._measure()
         except Exception as error:
-            self._tell("Kalibrierung", "Messung mit Gewicht fehlgeschlagen: {}".format(error), NotificationType.ERROR)
+            self._tell("Kalibrierung", "Messung verworfen: {}. Nichts gespeichert. Still stehen und noch einmal versuchen.".format(error), NotificationType.ERROR)
             return
         delta = float(loaded) - float(self.zeroValue)
         if abs(delta) < 10:
             self._tell(
                 "Kalibrierung",
-                "Die Waage hat sich nur um {} Zaehler bewegt. Das Gewicht steht nicht drauf, oder die vier Zellen arbeiten gegeneinander.".format(round(delta, 1)),
+                "Die Waage hat sich nur um {} Zaehler bewegt. Nichts gespeichert. Das Gewicht steht nicht drauf, oder die vier Zellen arbeiten gegeneinander.".format(round(delta, 1)),
                 NotificationType.ERROR,
             )
             return
         scale = scale_from_kilograms(self.zeroValue, loaded, self.cal_kg)
         if scale == 0.0:
-            self._tell("Kalibrierung", "Scale ist 0. Die Messung war leer und mit Gewicht gleich.", NotificationType.ERROR)
+            self._tell("Kalibrierung", "Scale ist 0. Nichts gespeichert.", NotificationType.ERROR)
+            return
+        try:
+            check_raw, _check_spread = await self._measure()
+        except Exception as error:
+            self._tell("Kalibrierung", "Kontrollmessung verworfen: {}. Nichts gespeichert.".format(error), NotificationType.ERROR)
+            return
+        check_grams = grams_from_raw(check_raw, self.zeroValue, scale)
+        check_kg = to_display(check_grams, "kg")
+        if not calibration_matches(self.cal_kg, check_kg):
+            self._tell(
+                "Kalibrierung",
+                "Verworfen. Kontrolle {} kg statt {} kg. Rohwerte leer {}, belastet {}, Kontrolle {}. Nichts gespeichert. Still stehen und 2 Gewicht messen wiederholen. Springen die Rohwerte um hunderttausende, den RATE-Pin am HX711 auf GND legen.".format(
+                    check_kg,
+                    round(self.cal_kg, 1),
+                    round(self.zeroValue, 1),
+                    round(loaded, 1),
+                    round(check_raw, 1),
+                ),
+                NotificationType.ERROR,
+            )
+            logging.error(
+                "HX711 calibration rejected empty {} ({}) loaded {} ({}) check {} scale {}".format(
+                    self.zeroValue, self.zeroSpread, loaded, loaded_spread, check_raw, scale
+                )
+            )
             return
         self.offset = self.zeroValue
         self.scale = scale
         self._reset_filter()
-        try:
-            check_raw = await self._measure(bursts=1, samples=10)
-            check_grams = grams_from_raw(check_raw, self.offset, self.scale)
-            check_kg = to_display(check_grams, "kg")
-            self._publish_grams(check_grams)
-            self.push_update(self.value)
-        except Exception as error:
-            check_kg = "unbekannt"
-            logging.error("HX711 check read failed: {}".format(error))
+        self._publish_grams(check_grams)
+        self.push_update(self.value)
         stored = await self._store_calibration()
         scale_text = format_scale(scale)
         if stored:
@@ -218,7 +236,7 @@ class CustomSensor(CBPiSensor):
             saved = "Speichern fehlgeschlagen. Offset {} und Scale {} von Hand eintragen und TareOnStart auf No stellen.".format(round(self.offset, 1), scale_text)
         hint = ""
         if abs(delta) < 2000:
-            hint = " Die Aenderung ist nur {} Zaehler. Die Anzeige kann stark schwanken, weil die Zellen kaum arbeiten.".format(round(delta, 1))
+            hint = " Die Aenderung ist {} Zaehler. Die Anzeige kann schwanken, weil die Zellen kaum arbeiten.".format(round(delta, 1))
         self._tell(
             "Kalibrierung fertig",
             "Kontrolle {} kg. {} Sensor nicht speichern und CraftBeerPi nicht neu starten, solange das Gewicht noch drauf steht.{}".format(check_kg, saved, hint),
@@ -260,7 +278,7 @@ class CustomSensor(CBPiSensor):
 
         if self.tare_on_start:
             try:
-                tare_raw = await asyncio.to_thread(self._averaged_raw, 2, max(self.samples, 15))
+                tare_raw, _spread = await asyncio.to_thread(self._stable_raw, max(self.samples, 15))
                 if raw_is_usable(tare_raw):
                     self.offset = tare_raw
                     self._reset_filter()
@@ -275,10 +293,14 @@ class CustomSensor(CBPiSensor):
                 if self.calibration_active == False:
                     self.measurement_is_running = True
                     try:
-                        raw = await asyncio.to_thread(self._read_raw)
-                        self._publish_grams(self._grams(raw))
-                        self.log_data(self.value)
-                        self.push_update(self.value)
+                        raw, spread = await asyncio.to_thread(self._read_stats)
+                        if spread > STABLE_SPREAD:
+                            if self.value:
+                                self.push_update(self.value)
+                        else:
+                            self._publish_grams(self._grams(raw))
+                            self.log_data(self.value)
+                            self.push_update(self.value)
                     finally:
                         self.measurement_is_running = False
                     await asyncio.sleep(self.Interval)

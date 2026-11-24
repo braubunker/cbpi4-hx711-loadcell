@@ -17,7 +17,7 @@ Der HX711 hängt nur am Arduino, nicht mehr am Raspberry Pi.
 
 D0 und D1 bleiben frei. Das sind die USB-Leitungen.
 
-Die vier Wägezellen bleiben am HX711. RATE offen lassen oder auf GND, das sind 10 Messungen pro Sekunde.
+Die vier Wägezellen bleiben am HX711. Den RATE-Pin auf GND legen, das sind 10 Messungen pro Sekunde. Offen gelassen springt der Rohwert, und die Kalibrierung trifft das Gewicht nicht.
 
 ## Sketch auf den Nano laden
 
@@ -74,7 +74,9 @@ Unter **Settings** steht **HX711_port**. `auto` sucht `/dev/ttyUSB0` und `/dev/t
 2. Am Dashboard-Widget **Action** auf **Yes** stellen, damit die drei Punkte erscheinen.
 3. Waage leer lassen. Im Menü **1 Leer messen** wählen und für 85 kg `85` eintragen.
 4. Nach der Meldung das Gewicht aufstellen, still stehen und **2 Gewicht messen** wählen.
-5. Die Anzeige muss jetzt etwa 85 kg zeigen. Offset und Scale werden gespeichert. Den Sensor nicht noch einmal speichern und CraftBeerPi nicht neu starten, solange das Gewicht noch drauf steht.
+5. Die Meldung muss als Kontrolle etwa dasselbe Gewicht nennen. Erst dann werden Offset und Scale gespeichert. Die Anzeige zeigt dieses Gewicht. Den Sensor nicht noch einmal speichern und CraftBeerPi nicht neu starten, solange das Gewicht noch drauf steht.
+
+Weicht die Kontrolle stark ab, zum Beispiel 29 kg statt 87 kg, ist nichts gespeichert. Still stehen und Schritt 2 wiederholen. Stehen in der Meldung Rohwerte, die um hunderttausende auseinanderliegen, den RATE-Pin auf GND legen.
 
 `12.500` bedeutet 12,5 kg. Ein Scale von `0.0035` ist gültig und darf nicht auf `0` oder `1` gerundet werden.
 

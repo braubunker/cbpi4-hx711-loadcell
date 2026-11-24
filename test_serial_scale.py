@@ -1,4 +1,6 @@
 import importlib.util
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -36,6 +38,47 @@ class SerialScaleTest(unittest.TestCase):
             scale.ingest("R{}".format(value))
         fresh = [item[2] for item in scale.samples if item[0] > start]
         self.assertEqual(_module.trimmed_mean(fresh[:5]), 10)
+
+    def test_stable_window_ignores_one_spike(self):
+        scale = SerialScale(port="/dev/ttyUSB0")
+        result = {}
+
+        def worker():
+            try:
+                result["value"] = scale.read_stable(count=8, spread_limit=2500, timeout=2)
+            except Exception as error:
+                result["error"] = error
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        time.sleep(0.05)
+        for value in (509, 510, 508, 872000, 509, 511, 507, 509, 510):
+            scale.ingest("R{}".format(value))
+            time.sleep(0.02)
+        thread.join(3)
+        self.assertNotIn("error", result)
+        self.assertLess(abs(result["value"][0] - 509), 3)
+        self.assertLess(result["value"][1], 20)
+
+    def test_jumping_window_is_rejected(self):
+        scale = SerialScale(port="/dev/ttyUSB0")
+        result = {}
+
+        def worker():
+            try:
+                result["value"] = scale.read_stable(count=8, spread_limit=2500, timeout=1)
+            except Exception as error:
+                result["error"] = error
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        time.sleep(0.05)
+        for value in (509, 872000, 292000, 509, 872000, 292000, 509, 872000, 292000, 509):
+            scale.ingest("R{}".format(value))
+            time.sleep(0.02)
+        thread.join(2)
+        self.assertIsInstance(result.get("error"), RuntimeError)
+        self.assertIn("springen", str(result["error"]))
 
 
 if __name__ == "__main__":

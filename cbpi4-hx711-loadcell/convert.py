@@ -84,6 +84,38 @@ def format_scale(scale):
     return text
 
 
+# A resting HX711 stays within a few hundred counts. A window that also
+# contains a stray reading hundreds of thousands away is not a weight.
+STABLE_SPREAD = 2500.0
+
+
+def center_stats(values):
+    """Return the median and the spread of the central readings.
+
+    One spike at the end of the window does not move the median and does
+    not widen the reported spread.
+    """
+    ordered = sorted(float(value) for value in values)
+    if not ordered:
+        raise ValueError("no readings")
+    median = ordered[len(ordered) // 2]
+    if len(ordered) < 5:
+        core = ordered
+    else:
+        cut = len(ordered) // 5
+        core = ordered[cut:len(ordered) - cut]
+    return median, core[-1] - core[0]
+
+
+def calibration_matches(expected_kg, actual_kg, tolerance=0.15):
+    """True when a second reading still shows the weight that was applied."""
+    expected_kg = float(expected_kg)
+    actual_kg = float(actual_kg)
+    if expected_kg <= 0:
+        return False
+    return abs(actual_kg - expected_kg) <= tolerance * expected_kg
+
+
 def raw_is_usable(raw):
     """Reject a stuck zero and a saturated 24-bit HX711 word."""
     raw = float(raw)

@@ -17,6 +17,8 @@ trimmed_mean = _module.trimmed_mean
 scale_from_kilograms = _module.scale_from_kilograms
 raw_is_usable = _module.raw_is_usable
 format_scale = _module.format_scale
+center_stats = _module.center_stats
+calibration_matches = _module.calibration_matches
 
 
 class GramsFromRawTest(unittest.TestCase):
@@ -75,6 +77,23 @@ class GramsFromRawTest(unittest.TestCase):
         stored = float(format_scale(scale))
         self.assertAlmostEqual(stored, 300 / 85000.0, places=8)
         self.assertAlmostEqual(to_display(grams_from_raw(loaded, empty, stored), "kg"), 85, places=2)
+
+    def test_center_keeps_the_settled_reading(self):
+        median, spread = center_stats([509, 508, 510, 509, 872000, 507, 511, 509, 508, 510])
+        self.assertEqual(median, 509)
+        self.assertLess(spread, 20)
+
+    def test_a_control_reading_of_29_kg_is_not_87_kg(self):
+        self.assertFalse(calibration_matches(87, 29.119))
+        self.assertTrue(calibration_matches(87, 85.4))
+
+    def test_saved_scale_from_a_spike_shows_a_small_step_as_a_fraction(self):
+        # Offset 508.9 and scale 10.024 came from a raw spike. A settled
+        # step of about 400 counts is then 0.04 kg, not 87 kg.
+        grams = grams_from_raw(508.9 + 401, 508.9, 10.02427874)
+        self.assertAlmostEqual(to_display(grams, "kg"), 0.04, places=2)
+        settled = float(format_scale(scale_from_kilograms(508.9, 508.9 + 401, 87)))
+        self.assertAlmostEqual(to_display(grams_from_raw(508.9 + 401, 508.9, settled), "kg"), 87, places=1)
 
     def test_zero_and_saturated_raw_are_rejected(self):
         self.assertFalse(raw_is_usable(0))

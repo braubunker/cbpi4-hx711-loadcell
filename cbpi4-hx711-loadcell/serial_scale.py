@@ -3,7 +3,7 @@ import threading
 import time
 
 try:
-    from .convert import trimmed_mean
+    from .convert import STABLE_SPREAD, center_stats, raw_is_usable, trimmed_mean
 except ImportError:  # loaded as a plain file in the unit test
     import importlib.util
     from pathlib import Path
@@ -14,6 +14,9 @@ except ImportError:  # loaded as a plain file in the unit test
     )
     _convert = importlib.util.module_from_spec(_convert_spec)
     _convert_spec.loader.exec_module(_convert)
+    STABLE_SPREAD = _convert.STABLE_SPREAD
+    center_stats = _convert.center_stats
+    raw_is_usable = _convert.raw_is_usable
     trimmed_mean = _convert.trimmed_mean
 
 
@@ -101,16 +104,51 @@ class SerialScale(object):
             return "Port {} ist offen, aber es kommen keine Messwerte".format(self.port)
         return "Kein Arduino an USB gefunden"
 
-    def read_latest(self, count, max_age=3.0):
+    def read_latest_stats(self, count, max_age=3.0):
+        """Median and spread of the newest samples."""
         count = max(1, int(count))
         deadline = time.time() + max_age + 2.0
         while time.time() < deadline:
             with self.lock:
-                fresh = [item for item in self.samples if time.time() - item[1] <= max_age]
+                fresh = [item[2] for item in self.samples if time.time() - item[1] <= max_age]
                 if len(fresh) >= count:
-                    return trimmed_mean(item[2] for item in fresh[-count:])
+                    return center_stats(fresh[-count:])
             time.sleep(0.05)
         raise TimeoutError(self.last_error or "Arduino sendet keine Daten")
+
+    def read_latest(self, count, max_age=3.0):
+        median, _spread = self.read_latest_stats(count, max_age)
+        return median
+
+    def read_stable(self, count=20, spread_limit=None, timeout=None):
+        """Wait until a fresh window sits still, then return its median.
+
+        The last calibration used a short burst that was hundreds of
+        thousands of counts away from the settled reading. The saved
+        factor then showed a real stance as a fraction of a kilogram.
+        """
+        count = max(5, int(count))
+        if spread_limit is None:
+            spread_limit = STABLE_SPREAD
+        if timeout is None:
+            timeout = max(12.0, count * 0.35)
+        with self.lock:
+            start = self._seq
+        deadline = time.time() + timeout
+        last_median = None
+        last_spread = None
+        while time.time() < deadline:
+            with self.lock:
+                fresh = [item[2] for item in self.samples if item[0] > start]
+            if len(fresh) >= count:
+                median, spread = center_stats(fresh[-count:])
+                last_median, last_spread = median, spread
+                if spread <= spread_limit and raw_is_usable(median):
+                    return median, spread
+            time.sleep(0.05)
+        if last_spread is None:
+            raise TimeoutError(self.last_error or "Arduino sendet keine neuen Daten")
+        raise RuntimeError("Rohwerte springen, Spanne {} Zaehler".format(int(round(last_spread))))
 
     def read_fresh(self, count, timeout=None):
         count = max(1, int(count))
