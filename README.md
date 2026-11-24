@@ -1,58 +1,79 @@
-# HX711 für CraftBeerPi 4
+# HX711 über einen Arduino Nano
 
-Fork von [PiBrewing/cbpi4-hx711-loadcell](https://github.com/PiBrewing/cbpi4-hx711-loadcell). Der Sensor heißt weiter **HX711 Load Cell**, vorhandene Sensoren bleiben erhalten.
+CraftBeerPi liest die Waage nicht mehr über die GPIO-Pins. Ein Arduino Nano misst den HX711 und schickt die Rohwerte per USB. Der Sensor in CraftBeerPi heißt weiter **HX711 Load Cell**.
 
-Gegenüber der Originalfassung:
+Offset und Scale von der direkten GPIO-Schaltung gelten nicht mehr. Nach dem Umstellen neu kalibrieren.
 
-- Offset und Scale bleiben Kommazahlen, auch mit Minus. Ein kleiner Scale wird nicht mehr durch 1 ersetzt.
-- Beim Start wird nicht neu tariert. Der gespeicherte Offset bleibt der Nullpunkt.
-- Die Anzeige und die Kalibrierung sind in Kilogramm. Für eine Person von 85 kg wird `85` eingetragen, nicht `85000`.
-- Beim Start wird die leere Waage auf 0 gestellt. Ein großer Schritt, etwa Auf- oder Absteigen, erscheint mit der nächsten Messung und bleibt nicht auf einem Zwischenwert stehen.
+## Verdrahtung
 
-## Installation über das Netz
+Der HX711 hängt nur am Arduino, nicht mehr am Raspberry Pi.
 
-Auf dem Raspberry Pi, einmalig falls `git` fehlt:
+| HX711 | Arduino Nano |
+| --- | --- |
+| VCC | 5V |
+| GND | GND |
+| DT oder DOUT | D3 |
+| SCK oder CLK | D2 |
+
+D0 und D1 bleiben frei. Das sind die USB-Leitungen.
+
+Die vier Wägezellen bleiben am HX711. RATE offen lassen oder auf GND, das sind 10 Messungen pro Sekunde.
+
+## Sketch auf den Nano laden
+
+Am Computer die [Arduino IDE](https://www.arduino.cc/en/software) öffnen.
+
+1. Bibliothek **HX711** von Bogdan Necula installieren.
+2. Board **Arduino Nano** wählen. Bei den günstigen Nachbauten unter Prozessor **ATmega328P (Old Bootloader)** nehmen, falls das Hochladen scheitert.
+3. Diesen Sketch öffnen und hochladen: [hx711_nano.ino](arduino/hx711_nano/hx711_nano.ino)
+4. Seriellen Monitor auf **115200** stellen. Es erscheinen Zeilen wie `R-123456`.
+
+```cpp
+#include "HX711.h"
+
+// HX711 clock -> D2, data -> D3, VCC -> 5V, GND -> GND.
+HX711 scale;
+
+const uint8_t PIN_DATA = 3;
+const uint8_t PIN_CLOCK = 2;
+
+void setup() {
+  Serial.begin(115200);
+  scale.begin(PIN_DATA, PIN_CLOCK);
+  scale.set_gain(128);
+  Serial.println("hx711-nano");
+}
+
+void loop() {
+  if (scale.wait_ready_timeout(250)) {
+    Serial.print('R');
+    Serial.println(scale.read());
+  }
+}
+```
+
+Danach das USB-Kabel vom Computer abziehen und in den Raspberry Pi stecken.
+
+## Installation auf dem Pi
 
 ```bash
 sudo apt update
 sudo apt install -y git
-```
-
-Plugin holen und das bisherige ersetzen:
-
-```bash
+sudo usermod -aG dialout pi
 pipx runpip cbpi4 install --force-reinstall "git+https://github.com/braubunker/cbpi4-hx711-loadcell.git"
 sudo systemctl restart craftbeerpi
 ```
 
-Dieselbe Zeile später noch einmal ausführen, wenn eine neuere Fassung in diesem Repo liegt.
+`dialout` gilt erst nach einem neuen Login. Läuft CraftBeerPi als root, ist die Gruppe egal. Die Waage beim Neustart leer lassen.
 
-## Sensor einstellen
-
-1. CraftBeerPi öffnen.
-2. **Hardware** → **Sensor** → den HX711-Sensor öffnen.
-3. **Unit** auf **kg**, **TareOnStart** auf **Yes**, **Samples** auf **15**, **Deadband** auf **200** und **Interval** auf **1** stellen.
-4. **Offset** und **Scale** aus der Kalibrierung eintragen. Ein Minuszeichen stehen lassen. Scale nicht durch 1000 teilen.
-5. Speichern. Die Waage leer lassen und CraftBeerPi neu starten:
-
-```bash
-sudo systemctl restart craftbeerpi
-```
-
-Die drei Punkte für Tarieren und Kalibrieren stehen am Sensor-Widget auf dem Dashboard. Dafür in den Widget-Eigenschaften **Action** auf **Yes** setzen.
+Unter **Settings** steht **HX711_port**. `auto` sucht `/dev/ttyUSB0` und `/dev/ttyACM0`. Erscheint der Nano nicht, den Port eintragen, den `ls /dev/ttyUSB* /dev/ttyACM*` zeigt.
 
 ## Kalibrieren
 
-1. Kessel leeren.
-2. Am Widget **Calibrate Sensor** wählen.
-3. Das bekannte Gewicht in **Kilogramm** eintragen. Für 85 kg also `85`. Noch nichts auf die Waage stellen.
-4. Auf die Meldung warten, das Gewicht aufstellen, still stehen und erst dann **Next Step** bestätigen.
-5. Die Meldung nennt eine Kontrolle in kg. Sie muss nahe am bekannten Gewicht liegen. Offset und Scale daraus eintragen, die Kommastellen von Scale behalten, speichern und mit leerer Waage neu starten.
+1. Sensor öffnen. **Unit** auf **kg**, **TareOnStart** auf **Yes**, **Samples** auf **15**, **Deadband** auf **200**, **Interval** auf **1**.
+2. Am Dashboard-Widget **Action** auf **Yes** stellen, damit die drei Punkte erscheinen.
+3. Waage leer lassen. **Calibrate Sensor** wählen und das Gewicht in Kilogramm eintragen. Für 85 kg also `85`.
+4. Erst auf die Meldung warten, dann auf die Waage stellen, still stehen und **Next Step** drücken.
+5. Die Kontrolle muss nahe am bekannten Gewicht liegen. Offset und Scale eintragen, die Kommastellen behalten, speichern und mit leerer Waage neu starten.
 
-`12.500` bedeutet 12,5 kg. Nach dem Neustart muss die Waage leer sein, sonst wird das aktuelle Gewicht als neuer Nullpunkt genommen. Ältere Punkte in der Chart sind noch in Gramm und fallen deshalb aus der Skala, bis sie aus dem Zeitraum rutschen.
-
-Ist der Scale kleiner als 0,5, wird er nicht zur Übernahme angeboten. Dann heben sich die vier Wägezellen noch gegenseitig auf, und die Verdrahtung muss zuerst stimmen.
-
-## Tarieren
-
-**Tare Sensor** setzt den aktuellen Rohwert als Nullpunkt. Die Meldung nennt den Offset. Diesen Wert in den Sensor eintragen, sonst gilt nach einem Neustart wieder der alte Offset.
+`12.500` bedeutet 12,5 kg.
