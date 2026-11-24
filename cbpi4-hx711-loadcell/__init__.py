@@ -163,8 +163,23 @@ class CustomSensor(CBPiSensor):
             logging.info("Waiting for Sensor")
             await asyncio.sleep(self.Interval)
             pass
+        problem = None if hx is None else hx.status()
+        if hx is None or problem:
+            self.calibration_active = False
+            self.cbpi.notify(
+                "Kalibrierung",
+                "Keine Daten vom Nano: {}. Auf dem Pi muss sudo cat /dev/ttyUSB0 Zeilen wie R-123456 zeigen.".format(problem or "nicht verbunden"),
+                NotificationType.ERROR,
+            )
+            return
+        self.cbpi.notify("Kalibrierung", "Die leere Waage wird gemessen. Danach kommt die Aufforderung, das Gewicht aufzustellen.", NotificationType.INFO)
         logging.info("Reset")
-        self.zeroValue = round(self._averaged_raw(), 1)
+        try:
+            self.zeroValue = round(await asyncio.to_thread(self._averaged_raw), 1)
+        except Exception as error:
+            self.calibration_active = False
+            self.cbpi.notify("Kalibrierung", "Leermessung fehlgeschlagen: {}".format(error), NotificationType.ERROR)
+            return
         if not raw_is_usable(self.zeroValue):
             self.calibration_active = False
             self.cbpi.notify("Kalibrierung", "Leermessung ungültig. Waage leer lassen und neu starten.", NotificationType.ERROR)
@@ -176,7 +191,12 @@ class CustomSensor(CBPiSensor):
             pass
         self.next = False
 
-        self.raw = self._averaged_raw()
+        try:
+            self.raw = await asyncio.to_thread(self._averaged_raw)
+        except Exception as error:
+            self.calibration_active = False
+            self.cbpi.notify("Kalibrierung", "Messung mit Gewicht fehlgeschlagen: {}".format(error), NotificationType.ERROR)
+            return
         self.refUnit = round(scale_from_kilograms(self.zeroValue, self.raw, self.weight), 4)
         if abs(self.refUnit) < 0.5:
             self.cbpi.notify(
@@ -188,7 +208,12 @@ class CustomSensor(CBPiSensor):
             self.offset = self.zeroValue
             self.scale = self.refUnit
             self._reset_filter()
-            check_raw = self._averaged_raw()
+            try:
+                check_raw = await asyncio.to_thread(self._averaged_raw)
+            except Exception as error:
+                self.calibration_active = False
+                self.cbpi.notify("Kalibrierung", "Kontrollmessung fehlgeschlagen: {}".format(error), NotificationType.ERROR)
+                return
             check_grams = grams_from_raw(check_raw, self.offset, self.scale)
             check_kg = to_display(check_grams, "kg")
             self._publish_grams(check_grams)
@@ -221,7 +246,7 @@ class CustomSensor(CBPiSensor):
             try:
                 if hx is None:
                     raise RuntimeError("Arduino ist nicht verbunden")
-                hx.read_latest(1, max_age=5)
+                await asyncio.to_thread(hx.read_latest, 1, 5)
                 ready=True
             except Exception as e:
                 retries -=1
@@ -230,7 +255,7 @@ class CustomSensor(CBPiSensor):
 
         if self.tare_on_start:
             try:
-                tare_raw = self._averaged_raw(bursts=2, samples=max(self.samples, 15))
+                tare_raw = await asyncio.to_thread(self._averaged_raw, 2, max(self.samples, 15))
                 if raw_is_usable(tare_raw):
                     self.offset = tare_raw
                     self._reset_filter()
@@ -244,14 +269,18 @@ class CustomSensor(CBPiSensor):
             try:
                 if self.calibration_active == False:
                     self.measurement_is_running = True
-                    self._publish_grams(self._grams(self._read_raw()))
-                    self.log_data(self.value)
-                    self.push_update(self.value)
-                    self.measurement_is_running = False
+                    try:
+                        raw = await asyncio.to_thread(self._read_raw)
+                        self._publish_grams(self._grams(raw))
+                        self.log_data(self.value)
+                        self.push_update(self.value)
+                    finally:
+                        self.measurement_is_running = False
                     await asyncio.sleep(self.Interval)
                 else:
                     await asyncio.sleep(self.Interval)
             except Exception as e:
+                self.measurement_is_running = False
                 logging.error("HX711 read failed: {}".format(e))
                 await asyncio.sleep(self.Interval)
 

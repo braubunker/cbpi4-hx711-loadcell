@@ -79,6 +79,17 @@ class SerialScale(object):
                 self.samples = self.samples[-120:]
         return value
 
+    def status(self):
+        with self.lock:
+            count = len(self.samples)
+        if count:
+            return None
+        if self.last_error:
+            return self.last_error
+        if self.port:
+            return "Port {} ist offen, aber es kommen keine Messwerte".format(self.port)
+        return "Kein Arduino an USB gefunden"
+
     def read_latest(self, count, max_age=3.0):
         count = max(1, int(count))
         deadline = time.time() + max_age + 2.0
