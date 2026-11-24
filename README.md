@@ -72,8 +72,8 @@ Unter **Settings** steht **HX711_port**. `auto` sucht `/dev/ttyUSB0` und `/dev/t
 
 1. Sensor öffnen. **Unit** auf **kg**, **TareOnStart** auf **Yes**, **Samples** auf **15**, **Deadband** auf **200**, **Interval** auf **1**.
 2. Am Dashboard-Widget **Action** auf **Yes** stellen, damit die drei Punkte erscheinen.
-3. Waage leer lassen. **Calibrate Sensor** wählen und das Gewicht in Kilogramm eintragen. Für 85 kg also `85`.
-4. Erst auf die Meldung warten, dann auf die Waage stellen, still stehen und **Next Step** drücken.
-5. Die Kontrolle muss nahe am bekannten Gewicht liegen. Offset und Scale eintragen, die Kommastellen behalten, speichern und mit leerer Waage neu starten.
+3. Waage leer lassen. Im Menü **1 Leer messen** wählen und für 85 kg `85` eintragen.
+4. Nach der Meldung das Gewicht aufstellen, still stehen und **2 Gewicht messen** wählen.
+5. Offset und Scale aus der Meldung eintragen, die Kommastellen behalten, speichern und mit leerer Waage neu starten.
 
 `12.500` bedeutet 12,5 kg.

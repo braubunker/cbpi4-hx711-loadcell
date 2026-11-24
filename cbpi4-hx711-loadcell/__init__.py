@@ -12,7 +12,7 @@ from .convert import (
     to_display,
 )
 from .serial_scale import SerialScale
-from cbpi.api.dataclasses import NotificationAction, NotificationType
+from cbpi.api.dataclasses import NotificationType
 from cbpi.api.config import ConfigType
 
 logger = logging.getLogger(__name__)
@@ -115,7 +115,12 @@ class CustomSensor(CBPiSensor):
         return total / float(bursts)
 
     def _grams(self, raw):
+        if not self.scale:
+            return 0.0
         return grams_from_raw(raw, self.offset, self.scale)
+
+    def _tell(self, title, message, kind=NotificationType.INFO):
+        self.cbpi.notification.notify(title, message, kind, [], 180000)
 
     def _reset_filter(self):
         self._shown_grams = None
@@ -146,98 +151,60 @@ class CustomSensor(CBPiSensor):
     def tarereset(self):
         self._tare()
 
-    @action(key="Calibrate Sensor", parameters=[Property.Number(label="weight",configurable=True, default_value = 0, description="Gewicht in Kilogramm. Für 85 kg also 85 eintragen. Waage dabei leer lassen.")])
-    async def Calibrate(self ,weight = 0, **kwargs):
-        self.next = False
-        self.weight = float(weight)
-        if not 1 <= self.weight <= 400:
-            self.cbpi.notify(
-                "Kalibrierung",
-                "Gewicht in Kilogramm eintragen. Für 85 kg also 85, nicht 85000.",
-                NotificationType.ERROR,
-            )
-            return
-        logging.info(weight)
+    async def _measure(self, bursts=2, samples=10):
         self.calibration_active = True
-        while self.measurement_is_running is not False:
-            logging.info("Waiting for Sensor")
-            await asyncio.sleep(self.Interval)
-            pass
-        problem = None if hx is None else hx.status()
-        if hx is None or problem:
-            self.calibration_active = False
-            self.cbpi.notify(
-                "Kalibrierung",
-                "Keine Daten vom Nano: {}. Auf dem Pi muss sudo cat /dev/ttyUSB0 Zeilen wie R-123456 zeigen.".format(problem or "nicht verbunden"),
-                NotificationType.ERROR,
-            )
-            return
-        self.cbpi.notify("Kalibrierung", "Die leere Waage wird gemessen. Danach kommt die Aufforderung, das Gewicht aufzustellen.", NotificationType.INFO)
-        logging.info("Reset")
         try:
-            self.zeroValue = round(await asyncio.to_thread(self._averaged_raw), 1)
-        except Exception as error:
+            return await asyncio.to_thread(self._averaged_raw, bursts, samples)
+        finally:
             self.calibration_active = False
-            self.cbpi.notify("Kalibrierung", "Leermessung fehlgeschlagen: {}".format(error), NotificationType.ERROR)
-            return
-        if not raw_is_usable(self.zeroValue):
-            self.calibration_active = False
-            self.cbpi.notify("Kalibrierung", "Leermessung ungültig. Waage leer lassen und neu starten.", NotificationType.ERROR)
-            return
-        logging.info("Calibrate HX711 Loadcell")
-        self.cbpi.notify("Loadcell Calibration", "Gewicht aufstellen, still stehen und dann Next Step drücken.", NotificationType.INFO, action=[NotificationAction("Next Step", self.NextStep)])
-        while not self.next == True:
-            await asyncio.sleep(1)
-            pass
-        self.next = False
 
+    @action(key="1 Leer messen", parameters=[Property.Number(label="weight",configurable=True, default_value = 0, description="Bekanntes Gewicht in Kilogramm. Fuer 85 kg also 85. Waage jetzt leer lassen.")])
+    async def CalibrateEmpty(self, weight=0, **kwargs):
+        self.cal_kg = float(weight)
+        if not 1 <= self.cal_kg <= 400:
+            self._tell("Kalibrierung", "Gewicht in Kilogramm eintragen. Fuer 85 kg also 85, nicht 85000.", NotificationType.ERROR)
+            return
         try:
-            self.raw = await asyncio.to_thread(self._averaged_raw)
+            raw = await self._measure()
         except Exception as error:
-            self.calibration_active = False
-            self.cbpi.notify("Kalibrierung", "Messung mit Gewicht fehlgeschlagen: {}".format(error), NotificationType.ERROR)
+            self._tell("Kalibrierung", "Leermessung fehlgeschlagen: {}".format(error), NotificationType.ERROR)
             return
-        self.refUnit = round(scale_from_kilograms(self.zeroValue, self.raw, self.weight), 4)
-        if abs(self.refUnit) < 0.5:
-            self.cbpi.notify(
-                "Loadcell Calibration Error",
-                "Scale ist {} und damit zu klein. Die vier Zellen arbeiten noch gegeneinander.".format(self.refUnit),
-                NotificationType.ERROR,
-            )
-        else:
-            self.offset = self.zeroValue
-            self.scale = self.refUnit
-            self._reset_filter()
-            try:
-                check_raw = await asyncio.to_thread(self._averaged_raw)
-            except Exception as error:
-                self.calibration_active = False
-                self.cbpi.notify("Kalibrierung", "Kontrollmessung fehlgeschlagen: {}".format(error), NotificationType.ERROR)
-                return
-            check_grams = grams_from_raw(check_raw, self.offset, self.scale)
-            check_kg = to_display(check_grams, "kg")
-            self._publish_grams(check_grams)
-            if abs(check_kg - self.weight) > max(2.0, self.weight * 0.15):
-                self.cbpi.notify(
-                    "Kalibrierung passt nicht",
-                    "Kontrolle zeigt {} kg, erwartet {} kg. Waage leer starten, dann still draufstehen und wiederholen.".format(check_kg, self.weight),
-                    NotificationType.ERROR,
-                )
-            else:
-                self.cbpi.notify(
-                    "Kalibrierung fertig",
-                    "Kontrolle {} kg. Offset {} und Scale {} eintragen, Kommastellen behalten. Danach speichern und mit leerer Waage neu starten.".format(check_kg, self.zeroValue, self.refUnit),
-                    action=[NotificationAction("Next Step", self.NextStep)],
-                )
-                while not self.next == True:
-                    await asyncio.sleep(1)
-                    pass
-                self.next = False
-        self.calibration_active = False
+        if not raw_is_usable(raw):
+            self._tell("Kalibrierung", "Leermessung ungueltig. Waage leer lassen und noch einmal versuchen.", NotificationType.ERROR)
+            return
+        self.zeroValue = raw
+        self._tell("Kalibrierung", "Leerwert gespeichert. Jetzt {} kg aufstellen, still stehen und im Menue 2 Gewicht messen waehlen.".format(self.cal_kg))
 
-    async def NextStep(self):
-        self.next = True
-        pass
+    @action(key="2 Gewicht messen", parameters=[])
+    async def CalibrateLoad(self, **kwargs):
+        if not getattr(self, "cal_kg", 0) or not getattr(self, "zeroValue", None):
+            self._tell("Kalibrierung", "Zuerst 1 Leer messen ausfuehren.", NotificationType.ERROR)
+            return
+        try:
+            loaded = await self._measure()
+        except Exception as error:
+            self._tell("Kalibrierung", "Messung mit Gewicht fehlgeschlagen: {}".format(error), NotificationType.ERROR)
+            return
+        scale = round(scale_from_kilograms(self.zeroValue, loaded, self.cal_kg), 4)
+        if abs(scale) < 0.5:
+            self._tell("Kalibrierung", "Scale ist {} und damit zu klein. Die vier Zellen arbeiten noch gegeneinander.".format(scale), NotificationType.ERROR)
+            return
+        self.offset = self.zeroValue
+        self.scale = scale
+        self._reset_filter()
+        try:
+            check_raw = await self._measure(bursts=1, samples=10)
+            check_kg = to_display(grams_from_raw(check_raw, self.offset, self.scale), "kg")
+            self._publish_grams(grams_from_raw(check_raw, self.offset, self.scale))
+            self.push_update(self.value)
+        except Exception as error:
+            check_kg = "unbekannt"
+            logging.error("HX711 check read failed: {}".format(error))
+        self._tell(
+            "Kalibrierung fertig",
+            "Kontrolle {} kg. Offset {} und Scale {} eintragen. Kommastellen behalten, speichern und mit leerer Waage neu starten.".format(check_kg, round(self.zeroValue, 1), scale),
+            NotificationType.SUCCESS,
+        )
 
     async def run(self):
         ready= False
