@@ -5,7 +5,6 @@ from cbpi.api import *
 import time
 from cbpi.api.timer import Timer
 from .convert import (
-    STABLE_SPREAD,
     calibration_matches,
     follow_weight,
     format_scale,
@@ -64,9 +63,9 @@ class HX711_Config(CBPiExtension):
     Property.Number(label="scale",configurable = True, default_value = 0, description="Raw counts per gram. Small values such as 0.0035 are valid. Do not round them and do not divide them for kilograms."),
     Property.Select(label="Unit", options=["kg","g"], description="Display unit. Calibration weight is entered in kilograms."),
     Property.Select(label="TareOnStart", options=["Yes","No"], description="No keeps the calibrated zero. Yes replaces it at every start, so the scale must be empty. Calibration sets this to No."),
-    Property.Select(label="Samples", options=[10,15,20,30], description="Readings averaged for one result. 15 takes about two seconds."),
-    Property.Select(label="Deadband", options=[0,100,200,500], description="Hide changes smaller than this many grams. A step of 3 kg or more is shown at once."),
-    Property.Select(label="Interval", options=[1,2,5,10,30,60], description="Pause between readings, in seconds. Use 1 for a quicker display.")])
+    Property.Select(label="Samples", options=[10,15,20,30], description="Readings used while calibrating. The dashboard uses the last 3 readings and does not wait for this."),
+    Property.Select(label="Deadband", options=[0,100,200,500], description="Hide changes smaller than this many grams. Anything larger is shown at once."),
+    Property.Select(label="Interval", options=[1,2,5,10,30,60], description="How often the value is written to the chart, in seconds. The dashboard refreshes faster.")])
 
 class CustomSensor(CBPiSensor):
 
@@ -80,7 +79,10 @@ class CustomSensor(CBPiSensor):
         self.Interval = int(self.props.get("Interval", 1))
         self.samples = max(1, int(self.props.get("Samples", 15)))
         self.deadband = max(0, float(self.props.get("Deadband", 200) or 0))
-        self.snap = 3000.0
+        # The live value follows the last three counts. A change past the
+        # deadband is shown whole; creeping toward it made a step feel late.
+        self.live_samples = 3
+        self.snap = self.deadband
         self.tare_on_start = str(self.props.get("TareOnStart", "No")) == "Yes"
         self.unit = str(self.props.get("Unit", "kg") or "kg")
         self.offset = float(self.props.get("offset", 0) or 0)
@@ -88,6 +90,7 @@ class CustomSensor(CBPiSensor):
         self.calibration_active = False
         self.measurement_is_running = False
         self._shown_grams = None
+        self._last_log = 0.0
 
 
         logging.info("INIT HX711:")
@@ -106,7 +109,7 @@ class CustomSensor(CBPiSensor):
     def _read_stats(self):
         if hx is None:
             raise RuntimeError("Arduino ist nicht verbunden")
-        return hx.read_latest_stats(self.samples)
+        return hx.read_latest_stats(self.live_samples, 1.0)
 
     def _stable_raw(self, samples=20):
         if hx is None:
@@ -293,17 +296,16 @@ class CustomSensor(CBPiSensor):
                 if self.calibration_active == False:
                     self.measurement_is_running = True
                     try:
-                        raw, spread = await asyncio.to_thread(self._read_stats)
-                        if spread > STABLE_SPREAD:
-                            if self.value:
-                                self.push_update(self.value)
-                        else:
-                            self._publish_grams(self._grams(raw))
+                        raw, _spread = await asyncio.to_thread(self._read_stats)
+                        self._publish_grams(self._grams(raw))
+                        now = time.time()
+                        if now - self._last_log >= self.Interval:
                             self.log_data(self.value)
-                            self.push_update(self.value)
+                            self._last_log = now
+                        self.push_update(self.value)
                     finally:
                         self.measurement_is_running = False
-                    await asyncio.sleep(self.Interval)
+                    await asyncio.sleep(0.3)
                 else:
                     await asyncio.sleep(self.Interval)
             except Exception as e:

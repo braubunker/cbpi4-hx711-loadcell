@@ -57,6 +57,10 @@ class GramsFromRawTest(unittest.TestCase):
     def test_small_noise_does_not_replace_the_weight(self):
         self.assertEqual(follow_weight(85000, 85100, 200, 3000), 85000)
 
+    def test_a_one_kilogram_step_is_shown_at_once(self):
+        self.assertEqual(follow_weight(0, 1000, 200, 200), 1000)
+        self.assertEqual(follow_weight(87000, 85000, 200, 200), 85000)
+
     def test_trimmed_mean_drops_spikes(self):
         self.assertEqual(trimmed_mean([10, 10, 10, 10, 500]), 10)
 

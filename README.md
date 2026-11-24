@@ -70,7 +70,7 @@ Unter **Settings** steht **HX711_port**. `auto` sucht `/dev/ttyUSB0` und `/dev/t
 
 ## Kalibrieren
 
-1. Sensor öffnen. **Unit** auf **kg**, **TareOnStart** auf **No**, **Samples** auf **15**, **Deadband** auf **200**, **Interval** auf **1**. Einmal speichern, bevor jemand auf der Waage steht.
+1. Sensor öffnen. **Unit** auf **kg**, **TareOnStart** auf **No**, **Samples** auf **15**, **Deadband** auf **200**, **Interval** auf **1**. Einmal speichern, bevor jemand auf der Waage steht. Die Anzeige nimmt die letzten 3 Rohwerte und aktualisiert sich mehrmals pro Sekunde. **Samples** gilt nur für die Kalibrierung.
 2. Am Dashboard-Widget **Action** auf **Yes** stellen, damit die drei Punkte erscheinen.
 3. Waage leer lassen. Im Menü **1 Leer messen** wählen und für 85 kg `85` eintragen.
 4. Nach der Meldung das Gewicht aufstellen, still stehen und **2 Gewicht messen** wählen.

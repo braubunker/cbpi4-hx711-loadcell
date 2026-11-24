@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name="cbpi4-hx711-loadcell",
-    version="0.2.6",
+    version="0.2.7",
     description="CraftBeerPi 4 HX711 load cell plugin reading an Arduino Nano over USB",
     author="Alexander Vollkopf",
     author_email="avollkopf@web.de",
